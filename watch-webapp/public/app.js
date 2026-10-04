@@ -1,3 +1,4 @@
+import {initSearch} from './search.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
 const playerView = $('[data-view="player"]');
@@ -34,6 +35,87 @@ let castLoadPromise = null;
 let tvMode = null;
 let nativeProbeAt = 0;
 let nativeProbePending = false;
+let alternatives = [];
+let currentEvent = null;
+let recovering = false;
+let userPaused = true;
+let recoveryAttempts = 0;
+let lastRecovery = 0;
+let failedSources = new Set();
+let castOwned=false;
+let remoteProgress=0;
+let remotePosition=-1;
+let recoveryCycles=0;
+const friendly = {
+  INVALID_URL:'ENTER A VALID PUBLIC LINK', ENTER_EVENT:'ENTER AN EVENT',
+  SOURCE_UNAVAILABLE:"STREAM UNAVAILABLE — THIS SOURCE ISN'T WORKING RIGHT NOW",
+  NO_MEDIA:"NO PLAYABLE VIDEO FOUND",
+  DIRECT_BLOCKED:"PLAYBACK BLOCKED — THIS SOURCE CAN'T PLAY DIRECTLY ON YOUR DEVICE",
+  SOURCE_FROZEN:'STREAM UNAVAILABLE — THIS SOURCE HAS STOPPED UPDATING',
+  USAGE_LIMIT:'CHECK LIMIT REACHED — TRY AGAIN LATER', BUSY:'CHECKS ARE BUSY — TRY AGAIN SHORTLY',
+  DIRECT_ONLY:'THIS STREAM NEEDS TO BE OPENED AGAIN', NOT_STARTED:'THIS EVENT HAS NOT STARTED',
+  CAST_UNAVAILABLE:'THIS SOURCE IS UNAVAILABLE ON YOUR TV'
+};
+const search = initSearch(async (item, items, event) => {
+  currentEvent=event; alternatives=items; failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;
+  sourceUrl=item.sourceUrl;sourceLink.href=sourceUrl;streamInput.value=sourceUrl;
+  showView('player');userPaused=false;
+  const toTV=casting();
+  await runOperation(async signal => {
+    let choices=[item,...items.filter(x=>x.id!==item.id)];
+    for(const choice of choices) {
+      try {await playItem(choice,signal,toTV);return;}catch(error){if(signal.aborted)throw error;failedSources.add(choice.id);}
+    }
+    throw new Error('DIRECT_BLOCKED');
+  });
+});
+async function playItem(item,signal,toTV=false) {
+  sourceUrl=item.sourceUrl||sourceUrl;sourceLink.href=sourceUrl;
+  if(item.expiresAt && item.expiresAt<Date.now()) {
+    const data=await apiResolve(signal,true);
+    item={...item,...data[0]};
+  }
+  if(toTV){await loadOnTV(item,signal);candidate=item;}
+  else await attachLocal(item,signal);
+  userPaused=false;
+}
+function readable(error) {
+  if(friendly[error?.message])return friendly[error.message];
+  if(error?.name==='AbortError')return 'CONNECTION INTERRUPTED — TRY AGAIN';
+  return 'STREAM UNAVAILABLE — TRY REFRESH OR ANOTHER SOURCE';
+}
+async function recoverStream() {
+  if(recovering || busy || userPaused || !candidate || Date.now()-lastRecovery<15000)return;
+  if(++recoveryCycles>4){userPaused=true;say("NO WORKING SOURCES — PRESS REFRESH TO TRY AGAIN");return;}
+  recovering=true;lastRecovery=Date.now();
+  const toTV=Boolean(castOwned && castSession());
+  await runOperation(async signal=>{
+    say('STREAM INTERRUPTED — RECONNECTING');
+    try {
+      if(recoveryAttempts++<1) {await playItem(candidate,signal,toTV);return;}
+    }catch(error){if(signal.aborted)throw error;}
+    failedSources.add(candidate.id);
+    const available=[...alternatives,...(currentEvent?search.getSources(currentEvent.id):[])];
+    const attempted=new Set();
+    for(const next of available) {
+      if(failedSources.has(next.id)||attempted.has(next.id))continue;
+      attempted.add(next.id);say('STREAM INTERRUPTED — SWITCHING SOURCE');
+      try{await playItem(next,signal,toTV);return;}catch(error){if(signal.aborted)throw error;failedSources.add(next.id);}
+    }
+    // Refresh the durable source page only after cached alternatives are exhausted.
+    say('CHECKING FOR A FRESH SOURCE');
+    try{await resolveAndPlay(signal,toTV,true);return;}catch(error){if(signal.aborted)throw error;}
+    if(currentEvent) {
+      const fresh=await search.refreshSources(currentEvent.id,null,signal);
+      for(const next of fresh) {
+        if(next.expiresAt<Date.now()||failedSources.has(next.id))continue;
+        try{await playItem(next,signal,toTV);alternatives=fresh;return;}catch(error){if(signal.aborted)throw error;}
+      }
+    }
+    userPaused=true;throw new Error('SOURCE_UNAVAILABLE');
+  });
+  recovering=false;
+}
 
 function showView(name) {
   homeView.classList.toggle('is-active', name === 'home');
@@ -48,11 +130,8 @@ function placeholder(text) {
 }
 function castSession() { return castContext?.getCurrentSession() || null; }
 function casting() {
-  if (!castSession() || !remotePlayer?.isMediaLoaded) return false;
-  try {
-    const url = new URL(remotePlayer.mediaInfo?.contentId || '');
-    return url.origin === location.origin && url.pathname.startsWith('/api/media/');
-  } catch { return false; }
+  return Boolean(castSession() && remotePlayer?.isMediaLoaded &&
+    remotePlayer.mediaInfo?.customData?.cleanStreamOrigin === location.origin);
 }
 function setBusy(value) {
   busy = value;
@@ -109,23 +188,23 @@ function syncControls() {
   updateTVButton();
 }
 
-async function apiResolve(signal) {
+async function apiResolve(signal, refresh = false) {
   const response = await fetch('/api/resolve', {
     method: 'POST', headers: {'content-type': 'application/json'},
-    body: JSON.stringify({url: sourceUrl}), signal
+    body: JSON.stringify({url: sourceUrl, refresh}), signal
   });
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); }
-  catch { throw new Error(`SERVER ERROR ${response.status}. TRY REFRESH.`); }
-  if (!response.ok) throw new Error(data.detail || data.error || 'Could not resolve page');
+  catch { throw new Error('SOURCE_UNAVAILABLE'); }
+  if (!response.ok) throw new Error(data.code || 'SOURCE_UNAVAILABLE');
   if (!data.candidates?.length) throw new Error('NO PLAYABLE MEDIA FOUND');
   return data.candidates;
 }
-async function probeManifest(item, signal, url = item.proxyUrl, depth = 0) {
+async function probeManifest(item, signal, url = item.mediaUrl, depth = 0) {
   if (!item.isHls || depth > 3) return null;
   const response = await fetch(url, {signal, cache: 'no-store'});
-  if (!response.ok) throw new Error(`STREAM ERROR ${response.status}`);
+  if (!response.ok) throw new Error('SOURCE_UNAVAILABLE');
   const text = await response.text();
   if (!text.trimStart().startsWith('#EXTM3U')) throw new Error('INVALID STREAM PLAYLIST');
   if (text.includes('#EXT-X-STREAM-INF:')) {
@@ -185,11 +264,12 @@ async function attachLocal(item, signal) {
       syncControls();
       // Trigger readiness failure so refresh can re-extract the source.
       video.dispatchEvent(new Event('error'));
+      if(!busy) recoverStream();
     });
-    hls.loadSource(item.proxyUrl);
+    hls.loadSource(item.mediaUrl);
     hls.attachMedia(video);
   } else {
-    video.src = item.proxyUrl;
+    video.src = item.mediaUrl;
     video.load();
     if (item.isHls) {
       probeManifest(item, signal).then(info => {
@@ -201,13 +281,15 @@ async function attachLocal(item, signal) {
   }
   await ready;
   if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+  segmentDuration=item.segmentDuration||segmentDuration;
   playerEmpty.classList.add('is-hidden');
   try { await video.play(); say(); }
   catch { say('READY — PRESS PLAY'); }
   syncControls();
 }
-async function resolveAndPlay(signal, toTV = false) {
-  const items = await apiResolve(signal);
+async function resolveAndPlay(signal, toTV = false, refresh = false) {
+  const items = await apiResolve(signal, refresh);
+  if(!currentEvent) alternatives=items;
   let lastError;
   for (const item of items.slice(0, 3)) {
     try {
@@ -232,14 +314,17 @@ async function runOperation(task) {
   try { await task(controller.signal); }
   catch (error) {
     if (!controller.signal.aborted) {
+      userPaused=true;
       placeholder('TRY REFRESH');
-      say(String(error.message || error).toUpperCase());
+      console.warn('Playback failed', error.name, error.message);
+      say(readable(error));
     }
   } finally {
     if (operation === controller) { operation = null; setBusy(false); }
   }
 }
 async function openStream() {
+  search.stop(); currentEvent=null;alternatives=[];failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;userPaused=false;
   let url;
   try {
     const raw = streamInput.value.trim();
@@ -257,6 +342,7 @@ async function openStream() {
 async function refreshStream() {
   if (busy || !sourceUrl) return;
   const toTV = casting();
+  userPaused=false;recoveryAttempts=0;recoveryCycles=0;failedSources.clear();
   await runOperation(async signal => {
     if (candidate) {
       try {
@@ -266,7 +352,7 @@ async function refreshStream() {
       } catch (error) { if (signal.aborted) throw error; }
     }
     say('RECONNECTING TO SOURCE');
-    await resolveAndPlay(signal, toTV);
+    await resolveAndPlay(signal, toTV, true);
   });
 }
 
@@ -277,14 +363,14 @@ function updateTVButton() {
   tvButton.hidden = !tvMode;
   tvButton.textContent = tvMode === 'airplay' ? 'AIRPLAY' : 'CAST';
   tvButton.classList.toggle('is-connected', casting() || Boolean(video.webkitCurrentPlaybackTargetIsWireless));
-  tvButton.disabled = busy || castLoading || !candidate;
+  tvButton.disabled = busy || castLoading || !candidate || (tvMode === 'cast' && candidate.castEligible === false);
   tvButton.title = tvMode === 'cast' ? 'Choose a Google Cast device' : 'Choose an AirPlay device';
 }
 function mediaMime(item) {
   if (item.isHls) return 'application/vnd.apple.mpegurl';
   const type = item.contentType?.split(';')[0];
   if (type?.startsWith('video/')) return type;
-  const url = new URL(item.proxyUrl, location.href).searchParams.get('url') || '';
+  const url = item.mediaUrl || '';
   return /\.webm(?:$|\?)/i.test(url) ? 'video/webm' : 'video/mp4';
 }
 async function loadOnTV(item, signal) {
@@ -293,33 +379,26 @@ async function loadOnTV(item, signal) {
   castLoading = true;
   updateTVButton();
   try {
-    let live = Boolean(item.isHls && localLive);
-    if (item.isHls) {
-      const probeController = new AbortController();
-      const timeout = setTimeout(() => probeController.abort(), 12000);
-      const cancelProbe = () => probeController.abort();
-      signal?.addEventListener('abort', cancelProbe, {once: true});
-      let info;
-      try { info = await probeManifest(item, probeController.signal); }
-      finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancelProbe); }
-      if (info) { live = info.live; segmentDuration = info.duration; }
-    }
+    if(item.castEligible === false) throw new Error('CAST_UNAVAILABLE');
+    const live=Boolean(item.live);
+    segmentDuration=item.segmentDuration || segmentDuration;
     if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
-    const media = new chrome.cast.media.MediaInfo(new URL(item.proxyUrl, location.href).href, mediaMime(item));
+    const media = new chrome.cast.media.MediaInfo(new URL(item.mediaUrl, location.href).href, mediaMime(item));
     media.streamType = live ? chrome.cast.media.StreamType.LIVE : chrome.cast.media.StreamType.BUFFERED;
     media.metadata = new chrome.cast.media.GenericMediaMetadata();
-    media.metadata.title = 'WATCH';
-    media.customData = {sourceUrl, isHls: item.isHls, segmentDuration};
+    media.metadata.title = currentEvent?.title || 'CLEAN STREAM';
+    media.customData = {cleanStreamOrigin:location.origin, sourceUrl, isHls:item.isHls, segmentDuration, live, id:item.id, castEligible:item.castEligible, expiresAt:item.expiresAt};
     const request = new chrome.cast.media.LoadRequest(media);
     request.autoplay = true;
     if (!live && video.currentTime > 0) request.currentTime = video.currentTime;
     await session.loadMedia(request);
+    castOwned=true;remoteProgress=Date.now();remotePosition=-1;userPaused=false;
     // Only stop the local download after the receiver accepts the media.
     destroyLocal();
     placeholder('PLAYING ON TV');
     say();
   } catch (error) {
-    throw new Error(error.message || `CAST FAILED (${error.code || error}) — TRY ANOTHER STREAM`);
+    console.warn('Cast load failed',error.code); throw new Error('CAST_UNAVAILABLE');
   } finally { castLoading = false; syncControls(); }
 }
 function adoptCastMedia() {
@@ -327,8 +406,9 @@ function adoptCastMedia() {
   if (!media) return;
   try {
     const url = new URL(media.contentId);
-    if (url.origin !== location.origin || !url.pathname.startsWith('/api/media/')) return;
-    candidate = {proxyUrl: url.href, isHls: Boolean(media.customData?.isHls), contentType: media.contentType};
+    if (media.customData?.cleanStreamOrigin !== location.origin || url.protocol !== 'https:') return;
+    candidate = {...media.customData, mediaUrl:url.href, isHls:Boolean(media.customData?.isHls), contentType:media.contentType};
+    castOwned=true;remoteProgress=Date.now();userPaused=Boolean(remotePlayer?.isPaused);
     sourceUrl = media.customData?.sourceUrl || sourceUrl;
     sourceLink.href = sourceUrl;
     streamInput.value = sourceUrl;
@@ -352,6 +432,7 @@ window.__onGCastApiAvailable = available => {
   castContext.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, event => {
     if (event.sessionState === cast.framework.SessionState.SESSION_RESUMED) adoptCastMedia();
     if (event.sessionState === cast.framework.SessionState.SESSION_ENDED) {
+      castOwned=false;
       stage.classList.remove('is-casting');
       if (candidate && playerView.classList.contains('is-active') && !busy) {
         refreshStream();
@@ -378,15 +459,15 @@ tvButton.addEventListener('click', async () => {
     }
   } catch (error) {
     if (error !== 'cancel' && error?.code !== 'cancel') {
-      say(error.message || 'CAST UNAVAILABLE — CHECK YOUR TV, WI-FI, AND CHROME LOCAL NETWORK PERMISSION');
+      say('CAST UNAVAILABLE — CHECK YOUR TV AND LOCAL NETWORK PERMISSION');
     }
   } finally { castLoadPromise = null; updateTVButton(); }
 });
-$('#open-stream').addEventListener('click', openStream);
-streamInput.addEventListener('keydown', event => { if (event.key === 'Enter') openStream(); });
+$('#link-form').addEventListener('submit', event => {event.preventDefault();openStream();});
 refreshButton.addEventListener('click', refreshStream);
 $('#back-button').addEventListener('click', () => {
   operation?.abort(); operation = null;
+  userPaused=true;recovering=false;
   destroyLocal();
   // TV playback can continue while another link is entered.
   showView('home');
@@ -394,11 +475,11 @@ $('#back-button').addEventListener('click', () => {
   requestAnimationFrame(() => streamInput.focus());
 });
 playButton.addEventListener('click', async () => {
-  if (casting()) { remoteController.playOrPause(); return; }
+  if (casting()) { userPaused=!remotePlayer.isPaused;remoteController.playOrPause(); return; }
   if (!candidate || busy) return;
-  if (!video.paused) video.pause();
+  if (!video.paused) {userPaused=true;video.pause();}
   else {
-    try { await video.play(); say(); }
+    try { userPaused=false;await video.play(); say(); }
     catch { say('PLAYBACK COULD NOT START — PRESS REFRESH'); }
   }
 });
@@ -413,14 +494,14 @@ liveButton.addEventListener('click', async () => {
     if (target === null) return;
     const media = castSession()?.getMediaSession();
     const request = new chrome.cast.media.SeekRequest();
-    request.currentTime = target;
+    userPaused=false;request.currentTime = target;
     request.resumeState = chrome.cast.media.ResumeState.PLAYBACK_START;
     media?.seek(request, () => say(), () => say('COULD NOT JUMP TO LIVE — PRESS REFRESH'));
     return;
   }
   const target = latestLocalPosition();
   if (target === null) return;
-  video.currentTime = target;
+  userPaused=false;video.currentTime = target;
   try { await video.play(); say(); }
   catch { say('PRESS PLAY TO RESUME'); }
 });
@@ -435,21 +516,29 @@ $('#fullscreen-button').addEventListener('click', async () => {
 for (const name of ['play', 'pause', 'volumechange', 'durationchange', 'progress', 'seeked', 'webkitcurrentplaybacktargetiswirelesschanged']) {
   video.addEventListener(name, syncControls);
 }
-video.addEventListener('playing', () => { buffering = false; lastProgress = Date.now(); syncControls(); });
+video.addEventListener('playing', () => { userPaused=false;buffering = false; lastProgress = Date.now(); syncControls(); });
 video.addEventListener('waiting', () => { buffering = true; syncControls(); });
 video.addEventListener('ended', () => { buffering = true; syncControls(); });
 video.addEventListener('error', () => {
   buffering = true;
-  if (!busy && candidate && !casting()) say('STREAM INTERRUPTED — PRESS REFRESH');
+  if (!busy && candidate && !casting()) recoverStream();
   syncControls();
 });
 video.addEventListener('timeupdate', () => {
   if (video.currentTime !== lastTime) { lastTime = video.currentTime; lastProgress = Date.now(); }
   syncControls();
 });
+video.addEventListener('pause', () => {if(!busy && !recovering && !castLoading && !casting() && !video.ended && !video.error)userPaused=true;});
 setInterval(() => {
   if (!playerView.classList.contains('is-active')) return;
   syncControls();
+  if(!userPaused && !busy && !recovering && !casting() && lastProgress && Date.now()-lastProgress>18000)recoverStream();
+  if(!busy && !recovering && lastProgress && Date.now()-lastRecovery>60000 && !buffering){recoveryAttempts=0;recoveryCycles=0;}
+  if(castOwned && castSession() && !busy && !castLoading && !recovering){
+    if(remotePlayer?.isMediaLoaded && remotePlayer.isPaused)userPaused=true;
+    if(remotePlayer?.playerState==='PLAYING'){userPaused=false;if(remotePosition!==remotePlayer.currentTime){remotePosition=remotePlayer.currentTime;remoteProgress=Date.now();}}
+    if(!userPaused && remoteProgress && Date.now()-remoteProgress>18000)recoverStream();
+  }
   // Native Safari doesn't expose HLS playlist state. Read the same small playlist
   // periodically to distinguish live from VOD/ended streams without re-extracting.
   if (candidate?.isHls && !hls && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
@@ -464,3 +553,5 @@ setInterval(() => {
 }, 1000);
 updateTVButton();
 syncControls();
+
+if(window.__castReady || window.cast?.framework) window.__onGCastApiAvailable(true);

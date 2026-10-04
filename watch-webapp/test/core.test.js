@@ -1,0 +1,74 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {parseQuery,selectEvents,matchesParticipants} from '../public/events.js';
+import {privateAddress,safeURL,fetchLimited,WorkPool} from '../lib/network.js';
+import {parsePlaylist,validate} from '../lib/resolver.js';
+import {normalizeEvent} from '../lib/schedules.js';
+import {watchable,rank,eventJob} from '../lib/discovery.js';
+test('team, abbreviation, typo and matchup queries remain distinct',()=>{
+  for(const q of ['KNICKS','NYK','NEW YORK KNICKS','kniks'])assert.equal(parseQuery(q).teams[0].id,'18');
+  assert.equal(parseQuery('KNICKS CELTICS').kind,'matchup');
+  assert.equal(parseQuery('new orleans pelicans').teams.length,1);
+  assert.equal(parseQuery('NBA').kind,'league');
+  assert.equal(parseQuery('UFC 325').kind,'unsupported');
+  assert.equal(parseQuery('zzzz').kind,'unknown');
+});
+test('nonexistent matchups return no events, without confusing individual teams',()=>{
+  const event={id:'1',startTime:new Date(Date.now()+3600000).toISOString(),status:'scheduled',participants:[{id:'18'},{id:'2'}]};
+  assert.equal(selectEvents([event],parseQuery('knicks spurs')).length,0);
+  assert.equal(selectEvents([event],parseQuery('knicks celtics')).length,1);
+  assert.equal(matchesParticipants('Knicks vs Celtics',event.participants),true);
+  assert.equal(matchesParticipants('Knicks vs Lakers',event.participants),false);
+});
+test('private and mapped network destinations are rejected',async()=>{
+  for(const ip of ['127.0.0.2','10.1.1.1','169.254.169.254','100.64.1.1','192.168.1.1','::1','::ffff:127.0.0.1','::ffff:7f00:1','fc00::1'])assert.equal(privateAddress(ip),true,ip);
+  assert.equal(privateAddress('8.8.8.8'),false);
+  for(const url of ['http://127.0.0.2','http://[::ffff:127.0.0.1]','https://a:b@example.com','file:///etc/passwd'])await assert.rejects(safeURL(url));
+});
+test('redirects cannot fetch private addresses and byte samples stay bounded',async()=>{
+  const old=global.fetch;let calls=0;
+  try{
+    global.fetch=async()=>{calls++;return new Response(null,{status:302,headers:{location:'http://127.0.0.1'}});};
+    await assert.rejects(fetchLimited('https://8.8.8.8'));assert.equal(calls,1);
+    global.fetch=async()=>new Response(new Uint8Array(100000));
+    assert.equal((await fetchLimited('https://8.8.8.8',{limit:64,partial:true})).body.length,64);
+    await assert.rejects(fetchLimited('https://8.8.8.8',{limit:64}));
+  }finally{global.fetch=old;}
+});
+test('work pool limits concurrency and refuses excessive work',async()=>{
+  const pool=new WorkPool(2,3,5);let active=0,peak=0;
+  await Promise.all(Array.from({length:5},()=>pool.run(async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,5));active--;})));
+  assert.equal(peak,2);assert.equal(pool.active,0);await assert.rejects(pool.run(async()=>{}),/USAGE_LIMIT/);
+});
+test('HLS validation checks direct segment access, not just manifest HTTP status',async()=>{
+  const old=global.fetch;let segmentCORS=false;
+  const manifest='#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:6,\nsegment.ts\n#EXT-X-ENDLIST';
+  global.fetch=async url=>url.endsWith('.m3u8')?new Response(manifest,{headers:{'access-control-allow-origin':'*'}}):new Response(new Uint8Array(188),{headers:{'content-type':'video/mp2t',...(segmentCORS?{'access-control-allow-origin':'*'}:{})}});
+  try{
+    await assert.rejects(validate({url:'https://8.8.8.8/live.m3u8',isHls:true},'https://cleanstream.cloud.run'),/DIRECT_BLOCKED/);
+    segmentCORS=true;const item=await validate({url:'https://8.8.8.8/live.m3u8',isHls:true},'https://cleanstream.cloud.run');
+    assert.equal(item.mediaUrl,'https://8.8.8.8/live.m3u8');assert.equal(item.castEligible,true);assert.equal(item.live,false);assert.ok(!JSON.stringify(item).includes('/api/media/'));
+  }finally{global.fetch=old;}
+});
+test('playlist state and event timing do not confuse VOD with live events',()=>{
+  const p=parsePlaylist('#EXTM3U\n#EXT-X-TARGETDURATION:8\n#EXT-X-MEDIA-SEQUENCE:23\n#EXTINF:8,\na.ts','https://example.com/live/index.m3u8');
+  assert.equal(p.duration,8);assert.equal(p.sequence,23);assert.equal(p.live,true);assert.equal(p.segments[0],'https://example.com/live/a.ts');
+  const future={id:'nba-future',status:'scheduled',startTime:new Date(Date.now()+86400000).toISOString()};
+  assert.equal(watchable(future),false);assert.throws(()=>eventJob(future,'https://example.com'),/NOT_STARTED/);
+  assert.equal(rank([{score:5},{score:10}])[0].label,'BEST');
+});
+test('normalized schedules carry participants and real status',()=>{
+  const event=normalizeEvent({id:'123',date:'2026-10-04T23:00Z',competitions:[{status:{type:{state:'in'}},competitors:[{team:{id:'18',displayName:'New York Knicks'}},{team:{id:'2',displayName:'Boston Celtics'}}]}]});
+  assert.equal(event.id,'nba-123');assert.equal(event.status,'live');assert.equal(event.participants.length,2);
+  assert.equal(normalizeEvent({id:'bad',date:'invalid'}),null);
+});
+test('simultaneous viewers share one validation job per event',()=>{
+  const event={id:'nba-shared',league:'NBA',status:'live',startTime:new Date().toISOString()};
+  assert.equal(eventJob(event,'https://example.com'),eventJob(event,'https://example.com'));
+});
+test('frozen HLS is rejected instead of called healthy',async()=>{
+  const old=global.fetch;
+  global.fetch=async url=>new Response(url.endsWith('.m3u8')?'#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,\na.ts':new Uint8Array(188),{headers:{'access-control-allow-origin':'*'}});
+  try{await assert.rejects(validate({url:'https://8.8.8.8/frozen.m3u8',isHls:true},'https://example.com',{progress:true}),/SOURCE_FROZEN/);}
+  finally{global.fetch=old;}
+});

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "sportiskes",
+    "name": "SOURCE 01",
+    "leagues": ["NBA"],
+    "indexUrl": "https://01streameastslive-com.sportiskes.space/",
+    "allowedHosts": ["01streameastslive-com.sportiskes.space", "sportiskes.space"],
+    "enabled": true
+  }
+]

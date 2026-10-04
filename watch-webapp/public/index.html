@@ -5,40 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#000000" />
-  <title>Watch</title>
-  <link rel="stylesheet" href="/styles.css?v=0.3.0" />
+  <title>Clean Stream</title>
+  <link rel="stylesheet" href="/styles.css?v=0.4.0" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 </head>
 <body>
   <main class="app">
     <section class="home view is-active" data-view="home">
       <header class="site-header">
-        <div class="masthead">WATCH</div>
+        <div class="masthead">CLEAN STREAM</div>
       </header>
 
       <div class="home-spacer"></div>
 
-      <section class="url-section">
-        <div class="url-row">
-          <label for="stream-url">PASTE LINK</label>
-          <button class="text-action" id="open-stream" type="button">OPEN</button>
-        </div>
-
-        <div class="input-wrap">
-          <input
-            id="stream-url"
-            type="url"
-            inputmode="url"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            placeholder="https://"
-            aria-label="Stream page URL"
-          />
-        </div>
-
+      <section class="home-inputs" aria-label="Find a stream">
+        <form class="search-row" id="event-form">
+          <input id="event-query" type="search" placeholder="FIND EVENT" aria-label="Find event" autocomplete="off" maxlength="100" />
+          <button class="text-action" id="search-button" type="submit">SEARCH</button>
+        </form>
+        <form class="search-row" id="link-form">
+          <input id="stream-url" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="PASTE LINK" aria-label="Paste stream link" />
+          <button class="text-action" id="open-stream" type="submit">WATCH</button>
+        </form>
         <p class="message" id="home-message" aria-live="polite"></p>
       </section>
+      <section id="search-results" class="search-results" aria-label="Event results" hidden></section>
     </section>
 
     <section class="player view" data-view="player" aria-hidden="true">
@@ -82,7 +73,8 @@
     </section>
   </main>
 
-  <script src="/app.js?v=0.3.0"></script>
+  <script>window.__onGCastApiAvailable = value => { window.__castReady = value; };</script>
+  <script type="module" src="/app.js?v=0.4.0"></script>
   <script async src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
 </html>
