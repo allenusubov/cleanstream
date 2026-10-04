@@ -4,6 +4,8 @@ import { chromium } from 'playwright';
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
@@ -12,13 +14,23 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '128kb' }));
 app.use(express.static('public', {
   etag: true,
-  maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0
+  maxAge: 0
 }));
 
 const sessions = new Map();
 const ipBuckets = new Map();
 
-const SESSION_TTL_MS = 20 * 60 * 1000;
+// Expire only idle sessions. HLS segment/playlist requests keep an active TV alive.
+const SESSION_IDLE_MS = 30 * 60 * 1000;
+setInterval(() => {
+  const cutoff = Date.now() - SESSION_IDLE_MS;
+  for (const [id, session] of sessions) {
+    if (session.lastAccess < cutoff && !session.activeRequests) sessions.delete(id);
+  }
+  for (const [ip, times] of ipBuckets) {
+    if (!times.some(time => Date.now() - time < 60_000)) ipBuckets.delete(ip);
+  }
+}, 60_000).unref();
 const NAV_TIMEOUT_MS = 12_000;
 const INITIAL_SETTLE_MS = 2_500;
 const POST_INTERACTION_MS = 4_500;
@@ -407,10 +419,11 @@ app.post('/api/resolve', rateLimit, async (req, res) => {
       finalPageUrl: page.url(),
       cookies,
       userAgent: USER_AGENT,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      lastAccess: Date.now(),
+      activeRequests: 0
     });
 
-    setTimeout(() => sessions.delete(sessionId), SESSION_TTL_MS).unref?.();
 
     return res.json({
       sourceUrl: target.href,
@@ -436,6 +449,16 @@ app.post('/api/resolve', rateLimit, async (req, res) => {
   }
 });
 
+// Receivers fetch this public, token-scoped URL from another origin.
+app.use('/api/media/:sessionId', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 app.get('/api/media/:sessionId', async (req, res) => {
   const session = sessions.get(req.params.sessionId);
 
@@ -443,6 +466,7 @@ app.get('/api/media/:sessionId', async (req, res) => {
     return res.status(410).send('Session expired');
   }
 
+  session.lastAccess = Date.now();
   let target;
   try {
     target = await assertSafeHttpUrl(String(req.query.url || ''));
@@ -450,6 +474,10 @@ app.get('/api/media/:sessionId', async (req, res) => {
     return res.status(400).send(error.message);
   }
 
+  const abort = new AbortController();
+  const disconnect = () => { if (!res.writableEnded) abort.abort(); };
+  res.on('close', disconnect);
+  session.activeRequests++;
   try {
     const headers = {
       'user-agent': session.userAgent,
@@ -463,7 +491,8 @@ app.get('/api/media/:sessionId', async (req, res) => {
 
     const upstream = await fetch(target.href, {
       headers,
-      redirect: 'follow'
+      redirect: 'follow',
+      signal: abort.signal
     });
 
     const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
@@ -472,6 +501,7 @@ app.get('/api/media/:sessionId', async (req, res) => {
       HLS_TYPES.has(contentType.split(';')[0]);
 
     if (!upstream.ok && upstream.status !== 206) {
+      await upstream.body?.cancel();
       return res.status(upstream.status).send(`Upstream media error ${upstream.status}`);
     }
 
@@ -503,26 +533,24 @@ app.get('/api/media/:sessionId', async (req, res) => {
 
     if (!upstream.body) return res.end();
 
-    const reader = upstream.body.getReader();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      if (!res.write(Buffer.from(value))) {
-        await new Promise(resolve => res.once('drain', resolve));
-      }
+    if (req.method === 'HEAD') {
+      await upstream.body.cancel();
+      return res.end();
     }
+    await pipeline(Readable.fromWeb(upstream.body), res);
 
-    res.end();
   } catch (error) {
-    console.error(error);
+    if (!abort.signal.aborted) console.error(error);
 
-    if (!res.headersSent) {
+    if (!res.headersSent && !res.destroyed) {
       res.status(502).send('Media proxy failed');
-    } else {
+    } else if (!res.destroyed) {
       res.end();
     }
+  } finally {
+    session.activeRequests--;
+    session.lastAccess = Date.now();
+    res.off('close', disconnect);
   }
 });
 

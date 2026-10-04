@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#000000" />
   <title>Watch</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=0.3.0" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -44,6 +44,7 @@
     <section class="player view" data-view="player" aria-hidden="true">
       <header class="player-header">
         <button class="text-action" id="back-button" type="button">BACK</button>
+        <button class="text-action" id="refresh-button" type="button" disabled>REFRESH</button>
         <a
           class="text-action"
           id="source-link"
@@ -59,6 +60,7 @@
           playsinline
           controls
           preload="metadata"
+          x-webkit-airplay="allow"
         ></video>
 
         <div class="player-empty" id="player-empty">
@@ -66,20 +68,21 @@
         </div>
       </section>
 
-      <footer class="player-controls">
-        <button class="text-action" id="play-button" type="button">PLAY</button>
+      <footer class="player-controls" aria-label="Playback controls">
+        <button class="text-action" id="play-button" type="button" disabled>PLAY</button>
         <button class="text-action" id="mute-button" type="button">MUTE</button>
-
-        <div class="controls-right">
-          <button class="text-action" id="airplay-button" type="button">AIRPLAY</button>
-          <button class="text-action" id="fullscreen-button" type="button">FULLSCREEN</button>
-        </div>
+        <button class="text-action live-control" id="live-button" type="button" disabled aria-label="Go to live" title="No live stream loaded">
+          <span class="live-dot" aria-hidden="true"></span><span>LIVE</span>
+        </button>
+        <button class="text-action" id="tv-button" type="button" hidden>CAST</button>
+        <button class="text-action" id="fullscreen-button" type="button">FULLSCREEN</button>
       </footer>
 
       <p class="message player-message" id="player-message" aria-live="polite"></p>
     </section>
   </main>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=0.3.0"></script>
+  <script async src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
 </html>

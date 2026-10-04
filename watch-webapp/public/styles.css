@@ -111,8 +111,8 @@ a { text-decoration: none; }
   transition: background-color 110ms ease, color 110ms ease;
 }
 
-.text-action:hover,
-.text-action:focus-visible {
+.text-action:not(:disabled):hover,
+.text-action:not(:disabled):focus-visible {
   background: var(--fg);
   color: var(--bg);
   outline: none;
@@ -173,17 +173,49 @@ a { text-decoration: none; }
   letter-spacing: -.06em;
 }
 
-.player-controls {
-  flex: 0 0 auto;
-  gap: 24px;
+.player-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
 }
+#back-button { justify-self: start; }
+#refresh-button { justify-self: center; }
+#source-link { justify-self: end; }
 
-.controls-right {
-  display: flex;
-  align-items: baseline;
-  gap: clamp(22px,3vw,52px);
-  margin-left: auto;
+.player-controls {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "play mute live tv fullscreen";
+  align-items: center;
+  column-gap: clamp(18px, 3vw, 52px);
+  position: relative;
 }
+#play-button { grid-area: play; justify-self: start; }
+#mute-button { grid-area: mute; justify-self: start; }
+#tv-button { grid-area: tv; justify-self: end; }
+#fullscreen-button { grid-area: fullscreen; justify-self: end; }
+#live-button {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: .35em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #707070; flex: none; }
+#live-button.is-live { color: var(--fg); }
+#live-button.is-live .live-dot { background: #ef3434; }
+#live-button:not(:disabled):hover,
+#live-button:not(:disabled):focus-visible { color: var(--bg); }
+.text-action:disabled { color: var(--muted); cursor: default; }
+[hidden] { display: none !important; }
+#tv-button.is-connected { text-decoration: underline; text-underline-offset: .2em; }
+.player-stage.is-casting #video { visibility: hidden; }
+.player-stage.is-casting .player-empty { z-index: 1; }
+.player-stage.is-casting .empty-copy { font-size: clamp(24px, 5vw, 64px); color: #707070; }
 
 .player-message { margin-top: 18px; }
 
@@ -212,17 +244,17 @@ a { text-decoration: none; }
     min-height: 48svh;
   }
 
+  .player-header { font-size: clamp(15px, 4.5vw, 18px); }
   .player-controls {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    row-gap: 18px;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    grid-template-areas: "play live tv" "mute . fullscreen";
+    column-gap: 12px;
+    row-gap: 24px;
+    font-size: clamp(15px, 4.5vw, 18px);
   }
+  #live-button { grid-area: live; position: static; transform: none; justify-self: center; }
+  .text-action { min-height: 28px; display: inline-flex; align-items: center; }
 
-  .controls-right {
-    width: 100%;
-    justify-content: space-between;
-    margin-left: 0;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
