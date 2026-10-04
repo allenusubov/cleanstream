@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#000000" />
+  <title>Watch</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
+</head>
+<body>
+  <main class="app">
+    <section class="home view is-active" data-view="home">
+      <header class="site-header">
+        <div class="masthead">WATCH</div>
+      </header>
+
+      <div class="home-spacer"></div>
+
+      <section class="url-section">
+        <div class="url-row">
+          <label for="stream-url">PASTE LINK</label>
+          <button class="text-action" id="open-stream" type="button">OPEN</button>
+        </div>
+
+        <div class="input-wrap">
+          <input
+            id="stream-url"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="https://"
+            aria-label="Stream page URL"
+          />
+        </div>
+
+        <p class="message" id="home-message" aria-live="polite"></p>
+      </section>
+    </section>
+
+    <section class="player view" data-view="player" aria-hidden="true">
+      <header class="player-header">
+        <button class="text-action" id="back-button" type="button">BACK</button>
+        <a
+          class="text-action"
+          id="source-link"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+        >SOURCE</a>
+      </header>
+
+      <section class="player-stage">
+        <video
+          id="video"
+          playsinline
+          controls
+          preload="metadata"
+        ></video>
+
+        <div class="player-empty" id="player-empty">
+          <div class="empty-copy" id="empty-copy">LOADING</div>
+        </div>
+      </section>
+
+      <footer class="player-controls">
+        <button class="text-action" id="play-button" type="button">PLAY</button>
+        <button class="text-action" id="mute-button" type="button">MUTE</button>
+
+        <div class="controls-right">
+          <button class="text-action" id="airplay-button" type="button">AIRPLAY</button>
+          <button class="text-action" id="fullscreen-button" type="button">FULLSCREEN</button>
+        </div>
+      </footer>
+
+      <p class="message player-message" id="player-message" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
