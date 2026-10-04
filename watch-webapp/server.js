@@ -19,11 +19,12 @@ const sessions = new Map();
 const ipBuckets = new Map();
 
 const SESSION_TTL_MS = 20 * 60 * 1000;
-const RESOLVE_TIMEOUT_MS = 35_000;
-const PAGE_SETTLE_MS = 7_000;
+const NAV_TIMEOUT_MS = 12_000;
+const INITIAL_SETTLE_MS = 2_500;
+const POST_INTERACTION_MS = 4_500;
 const MAX_CANDIDATES = 12;
 
-const MEDIA_EXT = /\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
+const MEDIA_EXT = /\.(m3u8|mp4|m4v|mov|webm|mpd)(?:$|\?)/i;
 const HLS_TYPES = new Set([
   'application/vnd.apple.mpegurl',
   'application/x-mpegurl',
@@ -35,11 +36,37 @@ const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36';
 
+let sharedBrowser = null;
+
+async function getBrowser() {
+  if (sharedBrowser?.isConnected()) return sharedBrowser;
+
+  sharedBrowser = await chromium.launch({
+    headless: true,
+    args: [
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--no-first-run',
+      '--no-zygote'
+    ]
+  });
+
+  sharedBrowser.on('disconnected', () => {
+    sharedBrowser = null;
+  });
+
+  return sharedBrowser;
+}
+
 function rateLimit(req, res, next) {
   const key = req.ip || req.socket.remoteAddress || 'unknown';
   const now = Date.now();
   const windowMs = 60_000;
-  const max = 10;
+  const max = 8;
 
   const bucket = ipBuckets.get(key) || [];
   const fresh = bucket.filter(ts => now - ts < windowMs);
@@ -99,15 +126,16 @@ function scoreCandidate(candidate) {
   const url = candidate.url || '';
   const ct = (candidate.contentType || '').toLowerCase();
 
-  if (/\.m3u8(?:$|\?)/i.test(url)) score += 120;
-  if (HLS_TYPES.has(ct.split(';')[0])) score += 120;
-  if (/\.(mp4|m4v|mov|webm)(?:$|\?)/i.test(url)) score += 85;
-  if (ct.startsWith('video/')) score += 80;
-  if (candidate.kind === 'video') score += 35;
-  if (candidate.kind === 'source') score += 30;
-  if (candidate.kind === 'network') score += 20;
+  if (/\.m3u8(?:$|\?)/i.test(url)) score += 150;
+  if (HLS_TYPES.has(ct.split(';')[0])) score += 150;
+  if (/\.(mp4|m4v|mov|webm)(?:$|\?)/i.test(url)) score += 100;
+  if (ct.startsWith('video/')) score += 90;
+  if (candidate.kind === 'video') score += 45;
+  if (candidate.kind === 'source') score += 40;
+  if (candidate.kind === 'network') score += 25;
+  if (candidate.kind === 'request') score += 15;
 
-  if (/ads?|doubleclick|vast|preroll|promo|analytics|tracking/i.test(url)) score -= 200;
+  if (/ads?|doubleclick|vast|preroll|promo|analytics|tracking|pixel/i.test(url)) score -= 250;
   if (candidate.status && candidate.status >= 400) score -= 100;
 
   return score;
@@ -166,14 +194,95 @@ function cookieHeaderFor(cookies, targetUrl) {
     .join('; ');
 }
 
-async function createBrowser() {
-  return chromium.launch({
-    headless: true,
-    args: [
-      '--disable-dev-shm-usage',
-      '--no-sandbox'
-    ]
-  });
+async function collectDomCandidates(page) {
+  const output = [];
+
+  for (const frame of page.frames()) {
+    try {
+      const frameItems = await frame.evaluate(() => {
+        const items = [];
+
+        document.querySelectorAll('video').forEach(video => {
+          [video.currentSrc, video.src, video.getAttribute('src')]
+            .filter(Boolean)
+            .forEach(url => items.push({ url, kind: 'video' }));
+
+          video.querySelectorAll('source').forEach(source => {
+            const url = source.currentSrc || source.src || source.getAttribute('src');
+
+            if (url) {
+              items.push({
+                url,
+                kind: 'source',
+                contentType: source.type || ''
+              });
+            }
+          });
+        });
+
+        document.querySelectorAll('source').forEach(source => {
+          const url = source.currentSrc || source.src || source.getAttribute('src');
+
+          if (url) {
+            items.push({
+              url,
+              kind: 'source',
+              contentType: source.type || ''
+            });
+          }
+        });
+
+        return items;
+      });
+
+      for (const item of frameItems) {
+        const url = absoluteUrl(item.url, frame.url());
+        if (url) output.push({ ...item, url });
+      }
+    } catch {}
+  }
+
+  return output;
+}
+
+async function tryStartPlayers(page) {
+  const selectors = [
+    'button[aria-label*="play" i]',
+    '[role="button"][aria-label*="play" i]',
+    '.vjs-big-play-button',
+    '.jw-icon-playback',
+    '.plyr__control[data-plyr="play"]',
+    'button[class*="play" i]',
+    '[class*="play-button" i]'
+  ];
+
+  for (const frame of page.frames()) {
+    try {
+      const videos = frame.locator('video');
+      const count = await videos.count();
+
+      for (let i = 0; i < Math.min(count, 3); i++) {
+        try {
+          await videos.nth(i).evaluate(video => {
+            video.muted = true;
+            const result = video.play();
+            if (result?.catch) result.catch(() => {});
+          });
+        } catch {}
+      }
+    } catch {}
+
+    for (const selector of selectors) {
+      try {
+        const locator = frame.locator(selector).first();
+        if (await locator.isVisible({ timeout: 250 })) {
+          await locator.click({ timeout: 800, force: true });
+          await page.waitForTimeout(350);
+          break;
+        }
+      } catch {}
+    }
+  }
 }
 
 app.get('/health', (_req, res) => {
@@ -190,20 +299,52 @@ app.post('/api/resolve', rateLimit, async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  let browser;
+  let context;
 
   try {
-    browser = await createBrowser();
+    const browser = await getBrowser();
 
-    const context = await browser.newContext({
+    context = await browser.newContext({
       viewport: { width: 1440, height: 1000 },
       userAgent: USER_AGENT,
       locale: 'en-US',
       javaScriptEnabled: true
     });
 
+    // Close popup tabs immediately. The main page stays open.
+    let mainPage = null;
+    context.on('page', popup => {
+      if (mainPage && popup !== mainPage) {
+        popup.close().catch(() => {});
+      }
+    });
+
     const page = await context.newPage();
+    mainPage = page;
+
+    // Images and fonts are unnecessary for finding the player and slow these pages down.
+    await page.route('**/*', async route => {
+      const type = route.request().resourceType();
+      if (type === 'image' || type === 'font') {
+        return route.abort();
+      }
+      return route.continue();
+    });
+
     const networkCandidates = [];
+
+    page.on('request', request => {
+      try {
+        const url = request.url();
+        if (MEDIA_EXT.test(url)) {
+          networkCandidates.push({
+            url,
+            contentType: '',
+            kind: 'request'
+          });
+        }
+      } catch {}
+    });
 
     page.on('response', async response => {
       try {
@@ -226,68 +367,37 @@ app.post('/api/resolve', rateLimit, async (req, res) => {
       } catch {}
     });
 
-    await page.goto(target.href, {
-      waitUntil: 'domcontentloaded',
-      timeout: RESOLVE_TIMEOUT_MS
-    });
-
-    await page.waitForTimeout(PAGE_SETTLE_MS);
-
-    const domCandidates = [];
-
-    for (const frame of page.frames()) {
-      try {
-        const frameItems = await frame.evaluate(() => {
-          const output = [];
-
-          document.querySelectorAll('video').forEach(video => {
-            [
-              video.currentSrc,
-              video.src,
-              video.getAttribute('src')
-            ]
-              .filter(Boolean)
-              .forEach(url => output.push({ url, kind: 'video' }));
-
-            video.querySelectorAll('source').forEach(source => {
-              const url = source.currentSrc || source.src || source.getAttribute('src');
-
-              if (url) {
-                output.push({
-                  url,
-                  kind: 'source',
-                  contentType: source.type || ''
-                });
-              }
-            });
-          });
-
-          document.querySelectorAll('source').forEach(source => {
-            const url = source.currentSrc || source.src || source.getAttribute('src');
-
-            if (url) {
-              output.push({
-                url,
-                kind: 'source',
-                contentType: source.type || ''
-              });
-            }
-          });
-
-          return output;
-        });
-
-        for (const item of frameItems) {
-          const url = absoluteUrl(item.url, frame.url());
-          if (url) domCandidates.push({ ...item, url });
-        }
-      } catch {}
+    // "commit" only waits until the server begins returning the document.
+    // Heavy ad/stream pages often never finish DOMContentLoaded.
+    try {
+      await page.goto(target.href, {
+        waitUntil: 'commit',
+        timeout: NAV_TIMEOUT_MS
+      });
+    } catch (error) {
+      // If navigation actually started, keep going instead of failing the request.
+      if (page.url() === 'about:blank') throw error;
     }
 
-    const candidates = dedupeCandidates([
+    await page.waitForTimeout(INITIAL_SETTLE_MS);
+
+    let domCandidates = await collectDomCandidates(page);
+    let candidates = dedupeCandidates([
       ...domCandidates,
       ...networkCandidates
-    ]).slice(0, MAX_CANDIDATES);
+    ]);
+
+    // Many live players do not request HLS until the play control is activated.
+    if (!candidates.length) {
+      await tryStartPlayers(page);
+      await page.waitForTimeout(POST_INTERACTION_MS);
+
+      domCandidates = await collectDomCandidates(page);
+      candidates = dedupeCandidates([
+        ...domCandidates,
+        ...networkCandidates
+      ]);
+    }
 
     const cookies = await context.cookies();
     const sessionId = crypto.randomBytes(18).toString('hex');
@@ -305,7 +415,7 @@ app.post('/api/resolve', rateLimit, async (req, res) => {
     return res.json({
       sourceUrl: target.href,
       finalPageUrl: page.url(),
-      candidates: candidates.map(candidate => ({
+      candidates: candidates.slice(0, MAX_CANDIDATES).map(candidate => ({
         kind: candidate.kind,
         contentType: candidate.contentType || '',
         isHls:
@@ -322,7 +432,7 @@ app.post('/api/resolve', rateLimit, async (req, res) => {
       detail: error?.message || String(error)
     });
   } finally {
-    await browser?.close().catch(() => {});
+    await context?.close().catch(() => {});
   }
 });
 

@@ -19,6 +19,7 @@ const airplayButton = document.querySelector('#airplay-button');
 const fullscreenButton = document.querySelector('#fullscreen-button');
 
 let hls = null;
+let requestController = null;
 
 function showView(name) {
   const isHome = name === 'home';
@@ -42,6 +43,9 @@ function normalizeUrl(value) {
 }
 
 function resetPlayer() {
+  requestController?.abort();
+  requestController = null;
+
   if (hls) {
     hls.destroy();
     hls = null;
@@ -97,6 +101,26 @@ async function attachCandidate(candidate) {
   }
 }
 
+async function parseApiResponse(response) {
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    const clean = text
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 180);
+
+    throw new Error(
+      clean
+        ? `SERVER ERROR: ${clean}`
+        : `SERVER ERROR ${response.status}`
+    );
+  }
+}
+
 async function openStream() {
   const url = normalizeUrl(streamInput.value);
   homeMessage.textContent = '';
@@ -111,14 +135,17 @@ async function openStream() {
   sourceLink.href = url.href;
   showView('player');
 
+  requestController = new AbortController();
+
   try {
     const response = await fetch('/api/resolve', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: url.href })
+      body: JSON.stringify({ url: url.href }),
+      signal: requestController.signal
     });
 
-    const data = await response.json();
+    const data = await parseApiResponse(response);
 
     if (!response.ok) {
       throw new Error(data.detail || data.error || 'Could not resolve page');
@@ -132,8 +159,12 @@ async function openStream() {
 
     await attachCandidate(data.candidates[0]);
   } catch (error) {
+    if (error.name === 'AbortError') return;
+
     emptyCopy.textContent = 'FAILED';
     playerMessage.textContent = String(error.message || error).toUpperCase();
+  } finally {
+    requestController = null;
   }
 }
 
