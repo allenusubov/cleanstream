@@ -1,10 +1,62 @@
 [
   {
-    "id": "sportiskes",
-    "name": "SOURCE 01",
-    "leagues": ["NBA"],
-    "indexUrl": "https://01streameastslive-com.sportiskes.space/",
-    "allowedHosts": ["01streameastslive-com.sportiskes.space", "sportiskes.space"],
+    "id": "streamed",
+    "name": "STREAMED",
+    "type": "streamed",
+    "leagues": [
+      "*"
+    ],
     "enabled": true
+  },
+  {
+    "id": "wildgames",
+    "name": "WILDGAMES",
+    "leagues": [
+      "*"
+    ],
+    "indexUrl": "https://wildgames.bz/",
+    "allowedHosts": [
+      "wildgames.bz"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "ihdstreams",
+    "name": "IHDSTREAMS",
+    "leagues": [
+      "*"
+    ],
+    "indexUrl": "https://ihdstreams.top/",
+    "allowedHosts": [
+      "ihdstreams.top"
+    ],
+    "enabled": false,
+    "status": "Needs a reachable current event index before enabling"
+  },
+  {
+    "id": "tvsportslive",
+    "name": "TVSPORTSLIVE",
+    "leagues": [
+      "*"
+    ],
+    "indexUrl": "https://tvsportslive.fr/",
+    "allowedHosts": [
+      "tvsportslive.fr"
+    ],
+    "enabled": false,
+    "status": "Needs a reachable current event index before enabling"
+  },
+  {
+    "id": "streameast",
+    "name": "STREAMEAST",
+    "leagues": [
+      "*"
+    ],
+    "indexUrl": "https://streameastslive.com/",
+    "allowedHosts": [],
+    "enabled": false,
+    "waitSelector": "#seMatches .row-link",
+    "status": "Needs a reachable current event index before enabling",
+    "dynamic": true
   }
 ]

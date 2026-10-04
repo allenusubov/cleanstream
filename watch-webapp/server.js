@@ -2,7 +2,10 @@ import express from 'express';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {resolve,clearResolved} from './lib/resolver.js';
-import {getEvents,knownEvents} from './lib/schedules.js';
+import {knownEvents} from './lib/schedules.js';
+import {searchEvents} from './lib/live-search.js';
+import {youtubeId} from './public/youtube-url.js';
+import {resolveYouTube} from './lib/youtube.js';
 import {eventJob} from './lib/discovery.js';
 import {AppError} from './lib/network.js';
 const app=express();
@@ -11,7 +14,7 @@ app.set('trust proxy',1);
 app.use(express.json({limit:'16kb'}));
 app.use((req,res,next)=>{
   res.setHeader('X-Content-Type-Options','nosniff');
-  res.setHeader('Referrer-Policy','no-referrer');
+  res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
   next();
 });
 const buckets=new Map();
@@ -35,10 +38,12 @@ app.get('/api/events',limit(30),async(req,res)=>{
   const query=String(req.query.q||'').trim().slice(0,100);
   if(!query) throw new AppError('ENTER_EVENT');
   res.setHeader('Cache-Control','no-store');
-  res.json(await getEvents(query));
+  res.json(await searchEvents(query));
 });
 app.post('/api/resolve',limit(8),async(req,res)=>{
   const url=String(req.body?.url||'').trim();
+  const youtube=youtubeId(url);
+  if(youtube)return res.json({sourceUrl:url,candidates:[await resolveYouTube(youtube)]});
   if(req.body?.refresh) clearResolved(url,origin(req));
   res.setHeader('Cache-Control','no-store');
   res.json(await resolve(url,origin(req)));

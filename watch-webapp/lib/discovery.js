@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {matchesParticipants} from '../public/events.js';
 import {withPage,visit,resolve} from './resolver.js';
-import {AppError,WorkPool} from './network.js';
+import {AppError,WorkPool,fetchLimited} from './network.js';
+import {streamedPages} from './catalog.js';
+import {directoryLinks} from './directory.js';
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
 const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map();
 const pool=new WorkPool(2,8,120);
@@ -11,12 +13,18 @@ async function index(site) {
   const old=indexes.get(site.id);
   if(old && Date.now()-old.time<120000) return old.links;
   if(indexJobs.has(site.id)) return indexJobs.get(site.id);
-  const job=withPage(async page=>{
+  const job=(async()=>{
+    const response=await fetchLimited(site.indexUrl,{limit:2*1024*1024});
+    const staticLinks=directoryLinks(response.body.toString(),response.url,site.allowedHosts);
+    if(!site.dynamic){indexes.set(site.id,{time:Date.now(),links:staticLinks});return staticLinks;}
+    return withPage(async page=>{
     await visit(page,site.indexUrl);
-    const links=await page.locator('a[href]').evaluateAll(nodes=>nodes.slice(0,500).map(a=>({url:a.href,text:a.textContent?.trim()})));
-    const valid=links.filter(link=>{try{return ['http:','https:'].includes(new URL(link.url).protocol)&&site.allowedHosts.includes(new URL(link.url).hostname);}catch{return false;}});
+    if(site.waitSelector)await page.locator(site.waitSelector).first().waitFor({timeout:5000}).catch(()=>{});
+    const links=await page.locator('a[href]').evaluateAll(nodes=>nodes.slice(0,600).map(a=>({url:a.href,text:a.getAttribute('aria-label')||a.textContent?.trim()||a.closest('.row')?.querySelector('.name')?.textContent||''})));
+    const valid=links.filter(link=>{try{return ['http:','https:'].includes(new URL(link.url).protocol)&&(!site.allowedHosts?.length || site.allowedHosts.includes(new URL(link.url).hostname));}catch{return false;}});
     indexes.set(site.id,{time:Date.now(),links:valid});return valid;
-  }).finally(()=>indexJobs.delete(site.id));
+    });
+  })().finally(()=>indexJobs.delete(site.id));
   indexJobs.set(site.id,job);return job;
 }
 export function rank(sources) {
@@ -37,13 +45,13 @@ export function eventJob(event,origin) {
   job.start=()=>{
     if(job.started) return;job.started=true;
     job.promise=pool.run(async()=>{
-      const sites=registry.filter(s=>s.enabled && s.leagues.includes(event.league)).slice(0,4);
+      const sites=registry.filter(s=>s.enabled && (s.type==='streamed'||event.participants?.length>=2) && (s.leagues.includes('*')||s.leagues.includes(event.league))).slice(0,5);
       let matched=0, unavailable=0;
       await Promise.allSettled(sites.map(async site=>{
         const statsKey=`${site.id}|${event.league}`;
         const stats=history.get(statsKey)||{success:0,attempts:0,totalMs:0};
         try {
-          const pages=site.events?.[event.id] ? [{url:site.events[event.id],text:event.title}] :
+          const pages=site.events?.[event.id] ? [{url:site.events[event.id],text:event.title}] : site.type==='streamed'?await streamedPages(event):
             (await index(site)).filter(link=>matchesParticipants(link.text,event.participants));
           const unique=[...new Map(pages.map(p=>[p.url,p])).values()].slice(0,3);
           matched+=unique.length;
@@ -52,7 +60,8 @@ export function eventJob(event,origin) {
             try {
               const result=await resolve(page.url,origin,{progress:true});
               // Multiple variants from one page are one source, not independent backups.
-              const media=result.candidates.sort((a,b)=>a.startupMs-b.startupMs)[0];
+              const media=result.candidates.filter(m=>m.live).sort((a,b)=>a.startupMs-b.startupMs)[0];
+              if(!media)throw new AppError('SOURCE_NOT_LIVE',422);
               stats.success++;stats.totalMs+=media.startupMs;
               const reliability=stats.success/stats.attempts;
               const score=100+reliability*20-Math.min(media.startupMs/1000,25)+Math.min(media.quality/1080,1)*5;

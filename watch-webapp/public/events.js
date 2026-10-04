@@ -37,7 +37,7 @@ export function parseQuery(raw) {
 export function matchesParticipants(text, participants) {
   const query=normalize(text);
   return participants.length >= 2 && participants.every(p => {
-    const team=teams.find(t=>t.id===p.id);
+    const team=p.id?teams.find(t=>t.id===p.id):null;
     const aliases=team?.aliases || [p.name];
     return aliases.some(a=>a.length>=3 && ` ${query} `.includes(` ${normalize(a)} `));
   });
