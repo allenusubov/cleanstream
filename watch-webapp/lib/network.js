@@ -34,7 +34,7 @@ export async function fetchLimited(input, {signal, limit = 1024 * 1024, headers 
   const timeout = AbortSignal.timeout(10000);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let url = input;
-  for (let n = 0; n < 6; n++) {
+  for (let n = 0; n < 10; n++) {
     url = (await safeURL(url)).href;
     const response = await fetch(url, {headers, redirect:'manual', signal:combined});
     if ([301,302,303,307,308].includes(response.status)) {

@@ -8,8 +8,9 @@ import {youtubeId} from './public/youtube-url.js';
 import {resolveYouTube} from './lib/youtube.js';
 import {twitchChannel,twitchCandidate} from './public/twitch-url.js';
 import {eventJob} from './lib/discovery.js';
-import {AppError,safeURL,fetchLimited} from './lib/network.js';
+import {AppError,safeURL} from './lib/network.js';
 import {customRegistry} from './lib/custom-sources.js';
+import {scanSourceProfile} from './lib/source-profile.js';
 const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
 app.set('trust proxy',1);
@@ -76,10 +77,11 @@ app.post('/api/events/:id/sources',limit(30),streamEventSources);
 app.post('/api/source-test',limit(12),async(req,res)=>{
   const raw=String(req.body?.url||'').trim();
   const url=await safeURL(raw.includes('://')?raw:`https://${raw}`);
-  const response=await fetchLimited(url.href,{limit:65536,partial:true});
-  const finalUrl=await safeURL(response.url);
+  const profile=await scanSourceProfile(url.href);
+  const finalUrl=await safeURL(profile.url);
   res.setHeader('Cache-Control','no-store');
-  res.json({ok:true,url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase()});
+  res.json({ok:true,url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase(),
+    categories:profile.categories||{},eventLists:profile.eventLists||[]});
 });
 // Deliberately disabled: this app never relays video bytes to viewers or TVs.
 app.use('/api/media',(_req,res)=>res.status(410).json({code:'DIRECT_ONLY'}));

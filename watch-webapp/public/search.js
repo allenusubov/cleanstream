@@ -1,5 +1,5 @@
 import {parseQuery} from './events.js';
-import {enabledCustomSourceUrls} from './custom-sources.js';
+import {enabledCustomSources} from './custom-sources.js';
 const labels={CHECKING:'CHECKING SOURCES',READY:'SOURCES READY',NO_MATCHING_SOURCES:'NO MATCHING SOURCES',
   NO_WORKING_SOURCES:'NO WORKING SOURCES',SOURCES_UNAVAILABLE:'SOURCES UNAVAILABLE',BUSY:'TRY AGAIN SHORTLY',USAGE_LIMIT:'CHECK LIMIT REACHED'};
 const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text)node.textContent=text;return node;};
@@ -12,7 +12,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
   const sourceRequest=(eventId,signal)=>fetch(`/api/events/${encodeURIComponent(eventId)}/sources`,{
     method:'POST',
     headers:{'content-type':'application/json'},
-    body:JSON.stringify({customSources:enabledCustomSourceUrls()}),
+    body:JSON.stringify({customSources:enabledCustomSources()}),
     signal
   });
 

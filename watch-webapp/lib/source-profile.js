@@ -1,0 +1,141 @@
+import {directoryLinks} from './directory.js';
+import {fetchLimited,safeURL} from './network.js';
+import {withPage,visit} from './resolver.js';
+
+export const CATEGORY_ALIASES={
+  NBA:['nba','basketball'], WNBA:['wnba','women basketball','basketball'], NFL:['nfl','american football','football'],
+  CFB:['cfb','college football','ncaa football'], UFC:['ufc','mma','fight'], MMA:['mma','ufc','fight'],
+  BOXING:['boxing','box'], NHL:['nhl','hockey'], MLB:['mlb','baseball'], SOCCER:['soccer','football'],
+  F1:['f1','formula 1','formula one','motorsport'], TENNIS:['tennis'], RUGBY:['rugby'], CRICKET:['cricket']
+};
+
+const EVENT_WORDS=['events','live','schedule','upcoming','matches','games','fixtures','calendar'];
+const HUB_WORDS=['sports','sport','watch','live','events','schedule'];
+const normalize=value=>String(value||'').toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+const cleanCandidate=(value,base)=>{
+  try {
+    const url=new URL(value,base);
+    if(!['http:','https:'].includes(url.protocol)||url.username||url.password)return null;
+    url.hash='';return url.href;
+  } catch{return null;}
+};
+const linkText=link=>{
+  try {
+    const url=new URL(link.url);
+    return normalize(`${link.text||''} ${decodeURIComponent(url.pathname)} ${decodeURIComponent(url.search)}`);
+  }catch{return normalize(link.text||'');}
+};
+function wordHit(text,term){
+  const needle=normalize(term);if(!needle)return false;
+  return (` ${text} `).includes(` ${needle} `);
+}
+function categoryScore(link,key,aliases){
+  const text=linkText(link),visible=normalize(link.text||'');
+  const exact=normalize(key);
+  let score=0;
+  if(wordHit(visible,exact))score+=30;
+  if(wordHit(text,exact))score+=20;
+  for(const alias of aliases){
+    if(wordHit(visible,alias))score+=14;
+    else if(wordHit(text,alias))score+=7;
+  }
+  // "football" is ambiguous. Prefer explicit NFL/CFB/SOCCER wording when it exists.
+  if(['NFL','CFB','SOCCER'].includes(key) && !wordHit(text,key) && wordHit(text,'football'))score-=4;
+  return score;
+}
+function eventScore(link){
+  const text=linkText(link),visible=normalize(link.text||'');let score=0;
+  for(const word of EVENT_WORDS){
+    if(wordHit(visible,word))score+=12;
+    else if(wordHit(text,word))score+=5;
+  }
+  if(/\/events?\/?(?:$|\?)/i.test(link.url))score+=10;
+  if(/\/schedule\/?(?:$|\?)/i.test(link.url))score+=10;
+  return score;
+}
+function dedupeLinks(links,base){
+  const map=new Map();
+  for(const link of links||[]){
+    const url=cleanCandidate(link.url,base);if(!url)continue;
+    const text=String(link.text||'').replace(/\s+/g,' ').trim();
+    const old=map.get(url);
+    if(!old || text.length>(old.text||'').length)map.set(url,{url,text});
+  }
+  return [...map.values()];
+}
+export function profileFromLinks(links,base){
+  const clean=dedupeLinks(links,base),categories={};
+  for(const [key,aliases] of Object.entries(CATEGORY_ALIASES)){
+    const ranked=clean.map(link=>({link,score:categoryScore(link,key,aliases)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score);
+    if(ranked.length)categories[key]=[...new Set(ranked.slice(0,2).map(x=>x.link.url))];
+  }
+  const eventLists=[...new Set(clean.map(link=>({link,score:eventScore(link)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score).slice(0,4).map(x=>x.link.url))];
+  const hubs=clean.filter(link=>{
+    const text=linkText(link);return HUB_WORDS.some(word=>wordHit(text,word));
+  }).slice(0,6).map(link=>link.url);
+  return {categories,eventLists,hubs,links:clean};
+}
+async function pageLinks(url,{dynamic=true}={}){
+  let finalUrl=url,staticLinks=[],staticError=null;
+  try{
+    const response=await fetchLimited(url,{limit:2*1024*1024});
+    finalUrl=response.url;
+    staticLinks=directoryLinks(response.body.toString(),response.url,[],1500);
+  }catch(error){staticError=error;}
+  const first=profileFromLinks(staticLinks,finalUrl);
+  const useful=Object.keys(first.categories).length+first.eventLists.length;
+  if(!dynamic || useful>=3)return {url:finalUrl,links:staticLinks};
+  try{
+    const dynamicLinks=await withPage(async page=>{
+      await visit(page,url);
+      finalUrl=page.url()||finalUrl;
+      return page.locator('a[href],[data-href],[data-url],[onclick]').evaluateAll(nodes=>nodes.slice(0,2200).flatMap(node=>{
+        let value=node.href||node.getAttribute('data-href')||node.getAttribute('data-url')||'';
+        if(!value){
+          const code=node.getAttribute('onclick')||'';
+          value=code.match(/(?:location(?:\.href)?\s*=|open\s*\()\s*['\"]([^'\"]+)['\"]/i)?.[1]||'';
+        }
+        if(!value)return [];
+        try{
+          const u=new URL(value,document.baseURI);
+          if(!/^https?:$/.test(u.protocol))return [];
+          return [{url:u.href,text:(node.getAttribute('aria-label')||node.textContent||node.getAttribute('title')||'').replace(/\s+/g,' ').trim()}];
+        }catch{return [];}
+      }));
+    });
+    return {url:finalUrl,links:dedupeLinks([...staticLinks,...dynamicLinks],finalUrl)};
+  }catch(error){
+    if(staticLinks.length)return {url:finalUrl,links:staticLinks};
+    throw staticError||error;
+  }
+}
+function mergeProfiles(profiles){
+  const categories={};const eventLists=[];
+  for(const profile of profiles){
+    for(const [key,urls] of Object.entries(profile.categories||{})){
+      categories[key]??=[];
+      for(const url of urls||[])if(!categories[key].includes(url)&&categories[key].length<3)categories[key].push(url);
+    }
+    for(const url of profile.eventLists||[])if(!eventLists.includes(url)&&eventLists.length<6)eventLists.push(url);
+  }
+  return {categories,eventLists};
+}
+export async function scanSourceProfile(input){
+  const root=await safeURL(input);
+  const firstPage=await pageLinks(root.href,{dynamic:true});
+  const first=profileFromLinks(firstPage.links,firstPage.url);
+  const profiles=[first];
+  // TEST may inspect a few obvious navigation hubs once. Search then reuses what
+  // was learned instead of rediscovering these paths for every live event.
+  if(Object.keys(first.categories).length<2){
+    for(const hub of first.hubs.slice(0,3)){
+      try{
+        await safeURL(hub);
+        const page=await pageLinks(hub,{dynamic:false});
+        profiles.push(profileFromLinks(page.links,page.url));
+      }catch{}
+    }
+  }
+  const merged=mergeProfiles(profiles);
+  return {url:firstPage.url,categories:merged.categories,eventLists:merged.eventLists};
+}

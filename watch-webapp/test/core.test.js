@@ -96,7 +96,7 @@ test('custom source settings normalize, persist, toggle and remove browser regis
   const storage={getItem:key=>data.get(key)||null,setItem:(key,value)=>data.set(key,value)};
   assert.equal(normalizeCustomSourceUrl('example.com'),'https://example.com/');
   addCustomSource('example.com',storage);
-  assert.deepEqual(loadCustomSources(storage),[{url:'https://example.com/',enabled:true}]);
+  assert.deepEqual(loadCustomSources(storage),[{url:'https://example.com/',enabled:true,categories:{},eventLists:[]}]);
   setCustomSourceEnabled('https://example.com/',false,storage);
   assert.equal(loadCustomSources(storage)[0].enabled,false);
   removeCustomSource('https://example.com/',storage);
@@ -110,8 +110,8 @@ test('custom source settings accept multiple newline-separated URLs in one add',
   assert.equal(result.added,2);
   assert.equal(result.existing,1);
   assert.deepEqual(loadCustomSources(storage),[
-    {url:'https://example.com/',enabled:true},
-    {url:'https://second.test/path',enabled:true}
+    {url:'https://example.com/',enabled:true,categories:{},eventLists:[]},
+    {url:'https://second.test/path',enabled:true,categories:{},eventLists:[]}
   ]);
 });
 
@@ -122,4 +122,28 @@ test('custom source URLs become bounded wildcard discovery adapters',async()=>{
   assert.deepEqual(sites[0].leagues,['*']);
   assert.equal(sites[0].dynamic,true);
   assert.equal(sites[0].indexUrls[0],'https://8.8.8.8/sports');
+});
+
+import {profileFromLinks} from '../lib/source-profile.js';
+import {setCustomSourceProfile,enabledCustomSources,parseProfileLines} from '../public/custom-sources.js';
+
+test('source TEST profile recognizes category and general event-list links across hosts',()=>{
+  const profile=profileFromLinks([
+    {url:'https://sports.example/nfl',text:'NFL'},
+    {url:'https://catalog.example/basketball',text:'NBA'},
+    {url:'https://events.example/live',text:'Live Events'}
+  ],'https://sports.example/');
+  assert.equal(profile.categories.NFL[0],'https://sports.example/nfl');
+  assert.equal(profile.categories.NBA[0],'https://catalog.example/basketball');
+  assert.equal(profile.eventLists[0],'https://events.example/live');
+});
+
+test('custom source profiles persist learned and manually supplied routes',()=>{
+  const data=new Map();const storage={getItem:key=>data.get(key)||null,setItem:(key,value)=>data.set(key,value)};
+  addCustomSource('example.com',storage);
+  setCustomSourceProfile('https://example.com/',{categories:{NFL:['https://catalog.example/nfl']},eventLists:['https://catalog.example/events']},storage);
+  const item=enabledCustomSources(storage)[0];
+  assert.equal(item.categories.NFL[0],'https://catalog.example/nfl');assert.equal(item.eventLists[0],'https://catalog.example/events');
+  const parsed=parseProfileLines('NBA https://other.example/nba\nEVENTS https://other.example/live');
+  assert.equal(parsed.categories.NBA[0],'https://other.example/nba');assert.equal(parsed.eventLists[0],'https://other.example/live');
 });

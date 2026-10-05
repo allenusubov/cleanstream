@@ -6,7 +6,7 @@ export function decodeText(value) {
     return n>0&&n<=0x10ffff?String.fromCodePoint(n):'';
   }).replace(/&(amp|quot|apos|lt|gt|nbsp);/g,(_,v)=>({amp:'&',quot:'"',apos:"'",lt:'<',gt:'>',nbsp:' '}[v]));
 }
-export function directoryLinks(html,base,allowedHosts=[]) {
+export function directoryLinks(html,base,allowedHosts=[],maxLinks=600) {
   const links=[];
   const clean=html.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi,'').replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi,'');
   for(const match of clean.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi)) {
@@ -18,7 +18,7 @@ export function directoryLinks(html,base,allowedHosts=[]) {
       const aria=match[1].match(/\baria-label\s*=\s*(["'])(.*?)\1/i)?.[2];
       const text=decodeText(aria||match[2].replace(/<[^>]*>/g,' ')).replace(/\s+/g,' ').trim();
       if(text)links.push({url:url.href,text});
-      if(links.length>=600)break;
+      if(links.length>=maxLinks)break;
     }catch{}
   }
   return links;

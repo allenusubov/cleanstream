@@ -2,7 +2,7 @@ import {initSearch} from './search.js';
 import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
-import {loadCustomSources,addCustomSources,setCustomSourceEnabled,removeCustomSource,customSourceDomain} from './custom-sources.js';
+import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,removeCustomSource,customSourceDomain,profileLines,parseProfileLines} from './custom-sources.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
 const playerView = $('[data-view="player"]');
@@ -154,37 +154,57 @@ function showView(name) {
   playerView.setAttribute('aria-hidden', String(name !== 'player'));
   settingsView.setAttribute('aria-hidden', String(name !== 'settings'));
 }
-function renderSettingsSources() {
-  const items=loadCustomSources();
-  settingsList.replaceChildren();
-  if(!items.length){
-    const empty=document.createElement('div');empty.className='custom-source-empty';empty.textContent='NO CUSTOM SOURCES ADDED';settingsList.append(empty);return;
+function renderSourceProfile(copy,item) {
+  const profile=document.createElement('div');profile.className='custom-source-profile';
+  const entries=[];
+  for(const [key,urls] of Object.entries(item.categories||{}))for(const url of urls)entries.push([key,url]);
+  for(const url of item.eventLists||[])entries.push(['EVENTS',url]);
+  for(const [label,url] of entries){
+    const line=document.createElement('div');line.className='custom-source-profile-line';
+    const tag=document.createElement('span');tag.className='custom-source-profile-label';tag.textContent=label;
+    const link=document.createElement('a');link.className='custom-source-profile-link';link.href=url;link.target='_blank';link.rel='noopener noreferrer';
+    try{const u=new URL(url);link.textContent=`${u.hostname.replace(/^www\./i,'')}${u.pathname==='/'?'':u.pathname}`;}catch{link.textContent=url;}
+    line.append(tag,link);profile.append(line);
   }
+  if(entries.length)copy.append(profile);
+}
+function profileEditor(row,item) {
+  const old=row.querySelector('.custom-source-editor');if(old){old.remove();return;}
+  const editor=document.createElement('form');editor.className='custom-source-editor';
+  const textarea=document.createElement('textarea');textarea.rows=4;textarea.spellcheck=false;textarea.value=profileLines(item);
+  textarea.placeholder='NFL https://example.com/nfl\nNBA https://example.com/nba\nEVENTS https://example.com/events';
+  const buttons=document.createElement('div');buttons.className='custom-source-editor-actions';
+  const save=document.createElement('button');save.type='submit';save.className='text-action';save.textContent='SAVE';
+  const cancel=document.createElement('button');cancel.type='button';cancel.className='text-action';cancel.textContent='CANCEL';cancel.addEventListener('click',()=>editor.remove());
+  const note=document.createElement('div');note.className='custom-source-editor-note';note.textContent='ONE MAPPING PER LINE · LABEL + URL';
+  buttons.append(save,cancel);editor.append(textarea,note,buttons);
+  editor.addEventListener('submit',event=>{event.preventDefault();const parsed=parseProfileLines(textarea.value);setCustomSourceProfile(item.url,parsed);renderSettingsSources();if(parsed.invalid)settingsMessage.textContent=`${parsed.invalid} INVALID MAPPING${parsed.invalid===1?'':'S'} IGNORED`;});
+  row.append(editor);textarea.focus();
+}
+function renderSettingsSources() {
+  const items=loadCustomSources();settingsList.replaceChildren();
+  if(!items.length){const empty=document.createElement('div');empty.className='custom-source-empty';empty.textContent='NO CUSTOM SOURCES ADDED';settingsList.append(empty);return;}
   for(const item of items){
     const row=document.createElement('div');row.className=`custom-source-row${item.enabled?'':' is-off'}`;
     const copy=document.createElement('div');copy.className='custom-source-copy';
     const domain=document.createElement('div');domain.className='custom-source-domain';domain.textContent=customSourceDomain(item.url);
-    const status=document.createElement('div');status.className='custom-source-status';status.textContent=item.enabled?'ENABLED':'DISABLED';
-    copy.append(domain,status);
+    const status=document.createElement('div');status.className='custom-source-status';status.textContent=item.enabled?'ENABLED':'DISABLED';copy.append(domain,status);renderSourceProfile(copy,item);
     const actions=document.createElement('div');actions.className='custom-source-actions';
-    const toggle=document.createElement('button');toggle.type='button';toggle.className='text-action';toggle.textContent=item.enabled?'ON':'OFF';
-    toggle.addEventListener('click',()=>{setCustomSourceEnabled(item.url,!item.enabled);renderSettingsSources();});
+    const toggle=document.createElement('button');toggle.type='button';toggle.className='text-action';toggle.textContent=item.enabled?'ON':'OFF';toggle.addEventListener('click',()=>{setCustomSourceEnabled(item.url,!item.enabled);renderSettingsSources();});
     const test=document.createElement('button');test.type='button';test.className='text-action';test.textContent='TEST';
     test.addEventListener('click',async()=>{
-      test.disabled=true;status.textContent='TESTING';
+      test.disabled=true;status.textContent='SCANNING';
       try{
-        const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:item.url})});
-        if(!response.ok)throw new Error();
-        const data=await response.json();status.textContent=`REACHABLE · ${data.host||customSourceDomain(item.url)}`;
-      }catch{status.textContent='UNAVAILABLE';}
-      finally{test.disabled=false;}
+        const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:item.url})});if(!response.ok)throw new Error();
+        const data=await response.json();setCustomSourceProfile(item.url,{categories:data.categories||{},eventLists:data.eventLists||[]});
+        const count=Object.values(data.categories||{}).flat().length+(data.eventLists||[]).length;settingsMessage.textContent=count?`${count} DISCOVERY LINK${count===1?'':'S'} SAVED`:'REACHABLE · NO CATEGORY LINKS FOUND';renderSettingsSources();
+      }catch{status.textContent='UNAVAILABLE';}finally{test.disabled=false;}
     });
-    const remove=document.createElement('button');remove.type='button';remove.className='text-action';remove.textContent='REMOVE';
-    remove.addEventListener('click',()=>{removeCustomSource(item.url);renderSettingsSources();});
-    actions.append(toggle,test,remove);row.append(copy,actions);settingsList.append(row);
+    const edit=document.createElement('button');edit.type='button';edit.className='text-action';edit.textContent='EDIT';edit.addEventListener('click',()=>profileEditor(row,item));
+    const remove=document.createElement('button');remove.type='button';remove.className='text-action';remove.textContent='REMOVE';remove.addEventListener('click',()=>{removeCustomSource(item.url);renderSettingsSources();});
+    actions.append(toggle,test,edit,remove);row.append(copy,actions);settingsList.append(row);
   }
 }
-
 function openSettings() {
   settingsMessage.textContent='';customSourceInput.value='';renderSettingsSources();showView('settings');navigate({view:'settings'});
 }

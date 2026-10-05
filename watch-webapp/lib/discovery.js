@@ -5,6 +5,7 @@ import {withPage,visit,resolve,validate} from './resolver.js';
 import {AppError,WorkPool,fetchLimited} from './network.js';
 import {streamedPages} from './catalog.js';
 import {directoryLinks} from './directory.js';
+import {CATEGORY_ALIASES} from './source-profile.js';
 
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
 const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map(), mirrorCache=new Map(), mirrorJobs=new Map();
@@ -13,11 +14,6 @@ const idFor=value=>crypto.createHash('sha256').update(value).digest('hex').slice
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
 const HLS=/\.m3u8(?:$|\?)/i;
 const MIRROR_WORDS=/\b(stream|mirror|server|feed|source|player|english|spanish|espanol|alt|backup|hd|sd)\b|#\s*\d+/i;
-const CATEGORY_ALIASES={
-  NBA:['nba','basketball'], WNBA:['wnba','basketball'], NFL:['nfl','football','american football'], CFB:['cfb','college football'],
-  UFC:['ufc','mma','fight'], MMA:['mma','ufc','fight'], BOXING:['boxing','fight'], NHL:['nhl','hockey'], MLB:['mlb','baseball'],
-  SOCCER:['soccer','football'], F1:['f1','formula 1','motor sports'], TENNIS:['tennis'], RUGBY:['rugby'], CRICKET:['cricket']
-};
 
 function hostAllowed(host,allowedHosts=[]) {
   return !allowedHosts.length || allowedHosts.some(allowed=>host===allowed || host.endsWith(`.${allowed}`));
@@ -42,7 +38,7 @@ function configuredUrls(site,value,event,base) {
   return items.map(item=>cleanUrl(fillTemplate(String(item),event),base)).filter(Boolean);
 }
 function rootsFor(site,event) {
-  return [...new Set([...(site.indexUrls||[]),...(site.indexUrl?[site.indexUrl]:[]),...(site.searchUrls||[])]
+  return [...new Set([...(site.eventListUrls||[]),...(site.indexUrls||[]),...(site.indexUrl?[site.indexUrl]:[]),...(site.searchUrls||[])]
     .map(template=>cleanUrl(fillTemplate(template,event))).filter(Boolean))];
 }
 function categoryTerms(site,event) {
@@ -84,7 +80,7 @@ async function readIndex(site,indexUrl,event) {
     let staticLinks=[], staticError=null;
     try {
       const response=await fetchLimited(indexUrl,{limit:2*1024*1024});
-      staticLinks=directoryLinks(response.body.toString(),response.url,site.allowedHosts);
+      staticLinks=directoryLinks(response.body.toString(),response.url,site.allowedHosts,site.custom?1500:600);
       if(!site.dynamic || staticLinks.some(link=>linkMatchesEvent(link,event)||linkMatchesCategory(link,site,event))) {
         indexes.set(cacheKey,{time:Date.now(),links:staticLinks});
         return staticLinks;
@@ -99,10 +95,16 @@ async function readIndex(site,indexUrl,event) {
       const dynamicLinks=await withPage(async page=>{
         await visit(page,indexUrl);
         if(site.waitSelector)await page.locator(site.waitSelector).first().waitFor({timeout:5000}).catch(()=>{});
-        const links=await page.locator('a[href]').evaluateAll(nodes=>nodes.slice(0,1000).map(a=>({
-          url:a.href,
-          text:a.getAttribute('aria-label')||a.textContent?.trim()||a.closest('.row')?.querySelector('.name')?.textContent||''
-        })));
+        const links=await page.locator('a[href],[data-href],[data-url],[onclick]').evaluateAll((nodes,max)=>nodes.slice(0,max).flatMap(node=>{
+          let raw=node.href||node.getAttribute('data-href')||node.getAttribute('data-url')||'';
+          if(!raw){
+            const code=node.getAttribute('onclick')||'';
+            raw=code.match(/(?:location(?:\.href)?\s*=|open\s*\()\s*['\"]([^'\"]+)['\"]/i)?.[1]||'';
+          }
+          if(!raw)return [];
+          try{const u=new URL(raw,document.baseURI);if(!/^https?:$/.test(u.protocol))return [];return [{url:u.href,text:node.getAttribute('aria-label')||node.textContent?.trim()||node.getAttribute('title')||''}];}
+          catch{return [];}
+        }),site.custom?2200:1000);
         return links.filter(link=>{try{const u=new URL(link.url);return ['http:','https:'].includes(u.protocol)&&hostAllowed(u.hostname,site.allowedHosts);}catch{return false;}});
       });
       const merged=[...new Map([...staticLinks,...dynamicLinks].map(link=>[link.url,link])).values()];
@@ -125,16 +127,16 @@ export async function categoryPages(site,event) {
   const key=String(event.league||event.sport||'').toUpperCase();
   const configured=site.categories?.[key]??site.categories?.[String(event.sport||'').toUpperCase()]??site.categories?.['*'];
   const explicit=configuredUrls(site,configured,event,roots[0]);
-  if(explicit.length)return [...new Set(explicit)].slice(0,4);
+  if(explicit.length)return [...new Set(explicit)].slice(0,site.custom?10:4);
   const found=[];
-  for(const root of roots.slice(0,4)) {
+  for(const root of roots.slice(0,site.custom?10:4)) {
     try {
       const links=await readIndex(site,root,event);
       for(const link of links)if(linkMatchesCategory(link,site,event))found.push(link.url);
-      if(found.length>=4)break;
+      if(found.length>=(site.custom?10:4))break;
     } catch { /* Try the next configured root. */ }
   }
-  return [...new Set(found)].slice(0,4);
+  return [...new Set(found)].slice(0,site.custom?10:4);
 }
 
 async function genericPages(site,event) {
@@ -148,10 +150,10 @@ async function genericPages(site,event) {
     try {
       const links=await readIndex(site,indexUrl,event);
       for(const link of links) if(linkMatchesEvent(link,event)) found.push(link);
-      if(found.length>=8) break;
+      if(found.length>=(site.custom?18:8)) break;
     } catch { /* Try the next bounded category/index/search page. */ }
   }
-  return [...new Map(found.map(page=>[page.url,page])).values()].slice(0,8);
+  return [...new Map(found.map(page=>[page.url,page])).values()].slice(0,site.custom?18:8);
 }
 
 function targetKey(target) {return `${target.kind||'page'}|${target.url}`;}
@@ -282,7 +284,7 @@ export function eventJob(event,origin,customSites=[]) {
         const stats=history.get(statsKey)||{success:0,attempts:0,totalMs:0};
         try {
           const pages=site.events?.[event.id] ? [{url:site.events[event.id],text:event.title}] : site.type==='streamed'?await streamedPages(event):await genericPages(site,event);
-          const uniquePages=[...new Map(pages.map(p=>[p.url,p])).values()].slice(0,6);
+          const uniquePages=[...new Map(pages.map(p=>[p.url,p])).values()].slice(0,site.custom?12:6);
           matched+=uniquePages.length;
           if(!uniquePages.length)return;
           const mirrorLists=await Promise.allSettled(uniquePages.map(page=>mirrorTargets(site,page,event)));
