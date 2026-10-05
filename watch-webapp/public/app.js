@@ -137,6 +137,10 @@ function normalizeTickerPosition(){
   tickerNormalizing=false;
 }
 function tickerSets(){return [...tickerTrack.querySelectorAll('.ticker-set')];}
+function sizeTickerItems(){
+  const width=Math.max(1,Math.floor(liveTicker.clientWidth));
+  for(const item of tickerTrack.querySelectorAll('.ticker-event'))item.style.width=`${width}px`;
+}
 function tickerTargetLeft(item){
   if(!item)return liveTicker.scrollLeft;
   const viewport=liveTicker.getBoundingClientRect(),rect=item.getBoundingClientRect();
@@ -185,6 +189,7 @@ async function stepTicker(){
 function startTickerMotion(){
   clearTimeout(tickerTimer);cancelAnimationFrame(tickerAnimationFrame);tickerAnimating=false;
   requestAnimationFrame(()=>{
+    sizeTickerItems();
     const sets=tickerSets(),first=sets[0],middle=sets[1];
     tickerSetWidth=first?.getBoundingClientRect().width||0;
     const firstMiddle=middle?.querySelector('.ticker-event');
@@ -243,6 +248,12 @@ liveTicker.addEventListener('pointerup',event=>{
   if(moved){tickerSuppressClickUntil=performance.now()+300;pauseTicker(3500);}
 });
 liveTicker.addEventListener('pointercancel',()=>{tickerDrag=null;});
+
+const tickerResizeObserver=new ResizeObserver(()=>{
+  if(!tickerEventCount)return;
+  requestAnimationFrame(()=>startTickerMotion());
+});
+tickerResizeObserver.observe(liveTicker);
 addEventListener('cleanstream:event-preferences-changed',()=>renderTicker(liveWindowEvents));
 exploreButton.addEventListener('click',async()=>{
   if(!liveWindowEvents.length||Date.now()-liveWindowUpdated>60000)await loadLiveWindow(true);

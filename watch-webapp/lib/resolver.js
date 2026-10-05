@@ -2,49 +2,69 @@ import {chromium} from 'playwright';
 import crypto from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {safeURL, fetchLimited, AppError, WorkPool} from './network.js';
-const pool=new WorkPool(2);
-let browserPromise=null, browserUsers=0;
+const pool=new WorkPool(Math.max(1,Math.min(6,Number(process.env.BROWSER_CONCURRENCY)||4)));
+let browserPromise=null;
 const cache=new Map(), inflight=new Map();
 const HLS=/\.m3u8(?:$|\?)/i;
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
 export async function withPage(task) {
   return pool.run(async()=>{
-    browserUsers++;
     let context;
     try {
+      // Keep one Chromium process warm for the lifetime of a Cloud Run instance.
+      // Contexts are still isolated and closed after every job.
       browserPromise ||= chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE_PATH || undefined,args:['--no-sandbox','--disable-dev-shm-usage','--disable-gpu']});
       const browser=await browserPromise;
       context=await browser.newContext({serviceWorkers:'block',acceptDownloads:false,
         userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'});
-      context.setDefaultTimeout(1500);
+      context.setDefaultTimeout(1200);
       let page=null, requests=0;
       context.on('page',p=>{if(page && p!==page) p.close().catch(()=>{});});
       await context.route('**/*',async route=>{
-        if(++requests>160 || ['image','font','media'].includes(route.request().resourceType())) return route.abort();
+        if(++requests>180 || ['image','font','media'].includes(route.request().resourceType())) return route.abort();
         try { await safeURL(route.request().url()); await route.continue(); }
         catch { await route.abort().catch(()=>{}); }
       });
       page=await context.newPage();
-      const timer=setTimeout(()=>context.close().catch(()=>{}),22000);
+      const timer=setTimeout(()=>context.close().catch(()=>{}),16000);
       try { return await task(page); } finally {clearTimeout(timer);}
     } finally {
       await context?.close().catch(()=>{});
-      browserUsers--;
-      if(!browserUsers) {
-        const old=browserPromise; browserPromise=null;
-        await old?.then(b=>b.close()).catch(()=>{});
-      }
     }
   });
 }
 export async function visit(page,url) {
   await safeURL(url);
-  try {await page.goto(url,{waitUntil:'commit',timeout:12000});}
+  try {await page.goto(url,{waitUntil:'domcontentloaded',timeout:6000});}
   catch(error){if(page.url()==='about:blank') throw error;}
-  await page.waitForTimeout(2500);
+  // Give client-side routers one short turn, but do not impose a multi-second sleep.
+  await page.waitForTimeout(250);
+}
+function htmlMedia(body,base){
+  const text=String(body||'').replace(/\u0026/g,'&').replace(/&amp;/g,'&');
+  const found=new Map();
+  const add=value=>{
+    if(!value)return;
+    try{const url=new URL(value.replace(/\\\//g,'/'),base).href;if(MEDIA.test(url))found.set(url,{url,isHls:HLS.test(url),contentType:''});}catch{}
+  };
+  for(const match of text.matchAll(/(?:src|href)=["']([^"']+)["']/ig))add(match[1]);
+  for(const match of text.matchAll(/https?:\/\/[^"'<>\s]+?\.(?:m3u8|mp4|m4v|mov|webm)(?:\?[^"'<>\s]*)?/ig))add(match[0]);
+  for(const match of text.matchAll(/https?:\\\/\\\/[^"'<>\s]+?\.(?:m3u8|mp4|m4v|mov|webm)(?:\?[^"'<>\s]*)?/ig))add(match[0]);
+  return [...found.values()].slice(0,8);
+}
+async function staticExtract(url){
+  try{
+    const response=await fetchLimited(url,{limit:1536*1024,partial:true});
+    const type=response.headers.get('content-type')||'';
+    if(MEDIA.test(response.url)||/mpegurl|^video\/(mp4|webm|quicktime)/i.test(type))return [{url:response.url,isHls:HLS.test(response.url)||/mpegurl/i.test(type),contentType:type}];
+    if(/text\/html|application\/xhtml/i.test(type)||!type)return htmlMedia(response.body.toString(),response.url);
+  }catch{}
+  return [];
 }
 async function extract(url) {
   if(MEDIA.test(url)) return [{url,isHls:HLS.test(url),contentType:''}];
+  const quick=await staticExtract(url);
+  if(quick.length)return quick;
   return withPage(async page=>{
     const found=new Map();
     const add=(url,type='',status=200)=>{
@@ -67,7 +87,7 @@ async function extract(url) {
         }
       } catch {}
     }
-    if(!found.size) await page.waitForTimeout(4500);
+    if(!found.size) await page.waitForTimeout(1200);
     return [...found.values()].filter(x=>x.status<400).sort((a,b)=>Number(b.isHls)-Number(a.isHls)).slice(0,4);
   });
 }

@@ -207,9 +207,11 @@ a { text-decoration: none; }
   color: var(--muted);
   white-space: nowrap;
 }
-.live-dot { width:7px; height:7px; border-radius:50%; background:#ef3434; flex:none; display:inline-block; }
+.live-dot { width:7px; height:7px; border-radius:50%; background:var(--muted); flex:none; display:inline-block; }
 .inline-live {display:inline-flex;align-items:center;gap:.35em;white-space:nowrap;}
-#live-button.has-live .live-dot,#live-button.is-live .live-dot {background:#ef3434;}
+.inline-live .live-dot {background:#ef3434;}
+#live-button .live-dot {background:var(--muted);}
+#live-button.is-live .live-dot {background:#ef3434;}
 #live-button.is-live { color: var(--fg); }
 #live-button:not(:disabled):hover,
 #live-button:not(:disabled):focus-visible { color: var(--bg); }
@@ -292,7 +294,7 @@ a { text-decoration: none; }
 .live-ticker:active {cursor:grabbing;}
 .live-ticker::-webkit-scrollbar {display:none;}
 .ticker-track {display:flex;width:max-content;}
-.ticker-set {display:flex;align-items:baseline;gap:1.7em;padding-right:1.7em;flex:none;}
+.ticker-set {display:flex;align-items:baseline;gap:0;padding-right:0;flex:none;}
 .ticker-event {
   flex:none;
   color:#707070;
@@ -302,6 +304,9 @@ a { text-decoration: none; }
   line-height:inherit;
   text-transform:uppercase;
   white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  text-align:left;
   transition:color 100ms ease;
 }
 .ticker-event:hover,.ticker-event:focus-visible {color:var(--fg);outline:none;}
@@ -335,31 +340,41 @@ a { text-decoration: none; }
 .has-results #home-message {display:none;}
 .search-results {margin-top:20px;padding-bottom:50px;}
 .results-title {font-size:clamp(28px,4vw,54px);line-height:1.05;letter-spacing:-.05em;margin:0 0 36px;overflow-wrap:anywhere;}
-.event-row {padding:25px 0;border-top:1px solid var(--hairline);}
+.event-row {padding:25px 0;border-top:1px solid var(--hairline);transition:background-color 110ms ease,color 110ms ease;}
 .event-heading {display:flex;justify-content:space-between;gap:24px;align-items:center;}
 .event-info {min-width:0;}
 .event-title {font-size:clamp(20px,2.5vw,34px);line-height:1.08;letter-spacing:-.045em;margin:0;text-transform:uppercase;overflow-wrap:anywhere;}
 .event-title-button {display:block;width:100%;font:inherit;line-height:inherit;letter-spacing:inherit;text-transform:inherit;text-align:left;cursor:pointer;color:inherit;padding:0;}
-.event-title-button:hover,.event-title-button:focus-visible {color:var(--fg);outline:none;text-decoration:underline;text-underline-offset:.13em;}
+.event-title-button:hover,.event-title-button:focus-visible {outline:none;text-decoration:none;}
+.event-row:not(.is-expanded):has(.event-title-button:hover),
+.event-row:not(.is-expanded):has(.event-title-button:focus-visible) {background:var(--fg);color:var(--bg);}
+.event-row:not(.is-expanded):has(.event-title-button:hover) .event-time,
+.event-row:not(.is-expanded):has(.event-title-button:focus-visible) .event-time,
+.event-row:not(.is-expanded):has(.event-title-button:hover) .event-state,
+.event-row:not(.is-expanded):has(.event-title-button:focus-visible) .event-state {color:#333;}
+.event-row:not(.is-expanded):has(.event-title-button:hover) .event-time .inline-live,
+.event-row:not(.is-expanded):has(.event-title-button:focus-visible) .event-time .inline-live {color:var(--bg);}
 .event-time,.event-state,.source-detail,.results-subtext {font-size:13px;color:#999;font-weight:600;line-height:1.5;letter-spacing:.015em;}
 .event-time .inline-live {color:var(--fg);}
 .results-title .inline-live {vertical-align:.08em;gap:.25em;}
 .results-title .live-dot {width:.18em;height:.18em;}
-.explore-event-row .event-state {white-space:nowrap;}
-.explore-event-row .source-list {padding-top:4px;}
-.explore-event-row.is-expanded {padding-bottom:29px;}
+.event-state {white-space:nowrap;}
+.event-row .source-list {padding-top:4px;}
+.event-row.is-expanded {padding-bottom:29px;}
 .event-time {margin:10px 0 0;}
 .event-actions {display:flex;gap:28px;align-items:center;flex-shrink:0;}
 .event-state {max-width:180px;}
-.event-watch {font-size:22px;}
+.event-action {font-size:clamp(13px,1.35vw,18px);white-space:nowrap;}
 .source-list {margin-top:14px;}
 .source-list:empty {display:none;}
 .source-choice {width:100%;display:flex;justify-content:space-between;align-items:center;text-align:left;padding:10px 0;cursor:pointer;gap:20px;}
 .source-copy {display:flex;flex-direction:column;gap:5px;}
 .source-name {font-size:18px;font-weight:700;}
 .source-rank {font-size:14px;font-weight:700;}
-.source-choice:hover,.source-choice:focus-visible {background:white;color:black;outline:none;}
-.source-choice:hover .source-detail {color:#333;}
+.source-choice:not(:disabled):hover,.source-choice:not(:disabled):focus-visible {background:white;color:black;outline:none;}
+.source-choice:not(:disabled):hover .source-detail {color:#333;}
+.source-choice:disabled {cursor:default;color:var(--muted);}
+.source-choice.is-pending .source-detail,.source-choice.is-pending .source-rank {color:var(--muted);}
 .results-message {font-size:18px;font-weight:700;line-height:1.4;}
 .more-events {margin-top:30px;font-size:20px;}
 .check-sources {font-size:13px;}
@@ -375,7 +390,7 @@ a { text-decoration: none; }
  .event-heading {align-items:flex-start;gap:14px;}
  .event-actions {flex-direction:column;align-items:flex-end;gap:12px;max-width:115px;}
  .event-state {font-size:11px;text-align:right;}
- .event-watch {font-size:18px;}
+ .event-action {font-size:12px;}
  .event-title {font-size:21px;}
  .player-stage {min-height:40svh;}
  #youtube-player,#twitch-player {min-height:200px;}
@@ -393,12 +408,13 @@ a { text-decoration: none; }
   align-items:center;
   justify-content:center;
   cursor:pointer;
-  color:var(--fg);
+  color:var(--muted);
   padding:0;
   margin:0;
+  transition:color 110ms ease;
 }
 .settings-trigger svg {display:block;width:100%;height:100%;}
-.settings-trigger:hover,.settings-trigger:focus-visible {background:var(--fg);color:var(--bg);outline:none;}
+.settings-trigger:hover,.settings-trigger:focus-visible {color:var(--fg);outline:none;}
 .home.has-results .settings-trigger {display:none;}
 
 .settings {

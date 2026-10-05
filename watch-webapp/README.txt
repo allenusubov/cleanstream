@@ -8,10 +8,11 @@ Minimal live-event search and direct-playback web app.
 - Search YouTube Live when `YOUTUBE_API_KEY` is configured.
 - Search Twitch live channels when `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` are configured.
 - Resolve configured event/source pages with Playwright only when needed.
-- Publish a source after a fast direct-playback check, then continue deeper live-HLS stability verification in the background.
+- Publish discovered source/mirror candidates immediately, resolve them in parallel, enable WATCH as soon as the first direct-playback candidate succeeds, and keep deeper HLS checks in the background.
 - Play accepted media directly from the original source to the viewer. `/api/media` is intentionally disabled; Clean Stream does not relay the full video through Cloud Run.
 - Preserve search/player state in the URL so refresh and browser back work normally.
-- Show a spoiler-free homepage ticker backed by the LIVE + next-24-hour schedule. It auto-sweeps left but can be scrolled/dragged/swiped in either direction. Event clicks open an exact-event results page, while EXPLORE opens a chronological LIVE / UPCOMING view with category filters.
+- Multi-event result pages do no automatic source work: CHECK SOURCES or clicking an event title starts that event only. Single-event pages start source discovery automatically.
+- Show a spoiler-free one-event-at-a-time homepage ticker backed by the LIVE + next-24-hour schedule. It slides one event at a time, pauses 1.5 seconds, and can be scrolled/dragged/swiped in either direction. Event clicks open an exact-event results page and start discovery automatically; EXPLORE opens a chronological LIVE / UPCOMING view with category filters.
 - Preserve custom category routes exactly, including paths, query strings, and hash fragments such as `/#nfl`; TEST-discovered routes merge behind manual routes instead of simplifying them. Settings also include homepage event-category priority, category ON/OFF controls, and favorite teams/athletes/fighters.
 - Treat source adapters as general by default; sport gating must be explicitly opted into.
 - Custom source TEST results merge with manual routes instead of overwriting them.
