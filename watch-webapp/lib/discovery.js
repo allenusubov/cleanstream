@@ -278,12 +278,10 @@ export function siteSupportsEvent(site,event) {
   return leagues.includes('*')||eventKeys.some(key=>leagues.includes(key));
 }
 async function fastCandidates(target,origin) {
-  if(target.kind==='media') {
-    const item=await validate({url:target.url,isHls:Boolean(target.isHls||HLS.test(target.url))},origin,{progress:false});
-    return [{...item,sourceUrl:target.parentUrl||target.url}];
-  }
+  // Surface discovered direct media immediately; actual device playback is the
+  // final compatibility test.
   const result=await resolve(target.url,origin,{progress:false});
-  return result.candidates.map(candidate=>({...candidate,sourceUrl:target.url}));
+  return result.candidates.map(candidate=>({...candidate,sourceUrl:target.parentUrl||target.url}));
 }
 function siteStats(site,event){
   const key=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
@@ -353,22 +351,26 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
           try{
             const candidates=(await fastCandidates(target,origin)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
             if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
-            const media=candidates[0];
-            stats.success++;stats.totalMs+=media.startupMs||0;
+            stats.success++;stats.totalMs+=candidates[0]?.startupMs||0;
             const reliability=stats.success/stats.attempts;
-            const score=100+reliability*20-Math.min((media.startupMs||0)/1000,25)+Math.min((media.quality||0)/1080,1)*5;
-            const active=upsert({...pending,...media,pending:false,unavailable:false,score,deepVerified:!media.isHls,verifiedAt:media.verifiedAt});
+            const actives=[];
+            for(const [index,media] of candidates.entries()){
+              const score=100+reliability*20-Math.min((media.startupMs||0)/1000,25)+Math.min((media.quality||0)/1080,1)*5-index*.25;
+              const id=index===0?pending.id:idFor(`${pending.id}|${media.mediaUrl}|${index}`);
+              const active=upsert({...pending,...media,id,pending:false,unavailable:false,score,deepVerified:!media.isHls,verifiedAt:media.verifiedAt});
+              actives.push(active);
+              if(!light && !media.provisional && media.isHls && media.live && !active.deepVerified){
+                // Deep progression validation improves ranking but never blocks the source from appearing or being watchable.
+                validate({url:media.mediaUrl,isHls:true},origin,{progress:true}).then(deep=>{
+                  Object.assign(active,{segmentDuration:deep.segmentDuration,quality:deep.quality||active.quality,deepVerified:true,verifiedAt:deep.verifiedAt,expiresAt:deep.expiresAt,score:active.score+4});
+                  job.publish();
+                }).catch(()=>{
+                  // Keep the fast-pass source visible. A later playback failure can mark it unavailable.
+                });
+              }
+            }
             if(target.text) {
               const remembered=mirrorHistory.get(mirrorKey)||new Set();remembered.add(target.text);mirrorHistory.set(mirrorKey,remembered);
-            }
-            if(!light && media.isHls && media.live && !active.deepVerified){
-              // Deep progression validation improves ranking but never blocks the source from appearing or being watchable.
-              validate({url:media.mediaUrl,isHls:true},origin,{progress:true}).then(deep=>{
-                Object.assign(active,{segmentDuration:deep.segmentDuration,quality:deep.quality||active.quality,deepVerified:true,verifiedAt:deep.verifiedAt,expiresAt:deep.expiresAt,score:active.score+4});
-                job.publish();
-              }).catch(()=>{
-                // Keep the fast-pass source visible. A later playback failure can mark it unavailable.
-              });
             }
           }catch{remove(pending.id);}
         };

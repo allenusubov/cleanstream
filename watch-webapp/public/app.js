@@ -103,11 +103,12 @@ const search = initSearch(async (item, items, event) => {
 
 function tickerEventButton(event){
   const button=document.createElement('button');button.type='button';button.className='ticker-event';
-  const title=document.createElement('span');title.className='ticker-event-title';title.textContent=compactEventTitle(event);button.append(title,document.createTextNode(' · '));
+  const title=document.createElement('span');title.className='ticker-event-title';title.textContent=compactEventTitle(event);button.append(title);
   if(event.status==='live'){
-    const live=document.createElement('span');live.className='inline-live';const dot=document.createElement('span');dot.className='live-dot';const label=document.createElement('span');label.textContent='LIVE';live.append(dot,label);button.append(live);
+    button.append(document.createTextNode(' '));
+    const live=document.createElement('span');live.className='inline-live';const dot=document.createElement('span');dot.className='live-dot';const label=document.createElement('span');label.className='live-label';label.textContent='LIVE';live.append(dot,label);button.append(live);
   }else{
-    const when=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(event.startTime)).toUpperCase();button.append(document.createTextNode(when));
+    const when=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(event.startTime)).toUpperCase();button.append(document.createTextNode(` · ${when}`));
   }
   button.addEventListener('click',eventClick=>{
     if(performance.now()<tickerSuppressClickUntil)return;
@@ -606,7 +607,7 @@ async function resolveAndPlay(signal, toTV = false, refresh = false) {
   const items = await apiResolve(signal, refresh);
   if(!currentEvent) alternatives=items;
   let lastError;
-  for (const item of items.slice(0, 3)) {
+  for (const item of items) {
     try {
       await playItem(item,signal,toTV && Boolean(castSession()));
       return;

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseQuery,selectEvents,matchesParticipants} from '../public/events.js';
 import {privateAddress,safeURL,fetchLimited,WorkPool} from '../lib/network.js';
-import {parsePlaylist,validate} from '../lib/resolver.js';
+import {parsePlaylist,validate,resolve,provisionalCandidate} from '../lib/resolver.js';
 import {normalizeEvent} from '../lib/schedules.js';
 import {watchable,rank,eventJob,linkMatchesEvent,linkMatchesCategory,siteSupportsEvent} from '../lib/discovery.js';
 test('team, abbreviation, typo and matchup queries remain distinct',()=>{
@@ -91,7 +91,7 @@ test('frozen HLS is rejected instead of called healthy',async()=>{
 });
 
 import {customRegistry} from '../lib/custom-sources.js';
-import {normalizeCustomSourceUrl,loadCustomSources,addCustomSource,addCustomSources,setCustomSourceEnabled,removeCustomSource} from '../public/custom-sources.js';
+import {normalizeCustomSourceUrl,loadCustomSources,addCustomSource,addCustomSources,setCustomSourceEnabled,removeCustomSource,likelyEventRoute} from '../public/custom-sources.js';
 
 test('custom source settings normalize, persist, toggle and remove browser registry rows',()=>{
   const data=new Map();
@@ -126,7 +126,7 @@ test('custom source URLs become wildcard discovery adapters',async()=>{
   assert.equal(sites[0].indexUrls[0],'https://8.8.8.8/sports');
 });
 
-import {profileFromLinks} from '../lib/source-profile.js';
+import {profileFromLinks,likelyEventPage} from '../lib/source-profile.js';
 import {setCustomSourceProfile,mergeCustomSourceProfile,enabledCustomSources,parseProfileLines} from '../public/custom-sources.js';
 
 test('source TEST profile recognizes category and general event-list links across hosts',()=>{
@@ -193,4 +193,39 @@ test('source TEST discovery keeps same-page hash category routes',()=>{
   const profile=profileFromLinks([{url:'https://sports.example/#nfl',text:'NFL'},{url:'https://sports.example/#nba',text:'NBA'}],'https://sports.example/');
   assert.equal(profile.categories.NFL[0],'https://sports.example/#nfl');
   assert.equal(profile.categories.NBA[0],'https://sports.example/#nba');
+});
+
+
+test('source TEST ignores matchup pages and articles when learning reusable category routes',()=>{
+  const links=[
+    {url:'https://sports.example/mlb-streams',text:'MLB Streams'},
+    {url:'https://sports.example/Cleveland-Guardians-vs-Chicago-White-Sox/78623',text:'Cleveland Guardians vs Chicago White Sox'},
+    {url:'https://sports.example/news/how-to-watch-mlb/171',text:'MLB News'},
+    {url:'https://sports.example/nfl-streams',text:'NFL Streams'}
+  ];
+  const profile=profileFromLinks(links,'https://sports.example/');
+  assert.equal(profile.categories.MLB[0],'https://sports.example/mlb-streams');
+  assert.equal(profile.categories.NFL[0],'https://sports.example/nfl-streams');
+  assert.equal(profile.categories.MLB.some(url=>url.includes('Guardians-vs')),false);
+  assert.equal(profile.eventLists.some(url=>url.includes('/news/')),false);
+  assert.equal(likelyEventPage(links[1]),true);
+});
+
+test('stored custom profiles discard obvious event pages while preserving reusable category routes',()=>{
+  assert.equal(likelyEventRoute('https://sports.example/nfl-streams'),false);
+  assert.equal(likelyEventRoute('https://sports.example/New-Orleans-Saints-vs-Atlanta-Falcons/69152'),true);
+  const data=new Map();const storage={getItem:key=>data.get(key)||null,setItem:(key,value)=>data.set(key,value)};
+  data.set('cleanstream.customSources.v1',JSON.stringify([{url:'https://sports.example/',enabled:true,categories:{NFL:['https://sports.example/nfl-streams','https://sports.example/New-Orleans-Saints-vs-Atlanta-Falcons/69152']},eventLists:[]}]))
+  const item=loadCustomSources(storage)[0];
+  assert.deepEqual(item.categories.NFL,['https://sports.example/nfl-streams']);
+});
+
+test('resolver can surface an https media candidate before server-side CORS validation',async()=>{
+  const direct=provisionalCandidate({url:'https://8.8.8.8/live.m3u8',isHls:true},'https://sports.example/event');
+  assert.equal(direct.mediaUrl,'https://8.8.8.8/live.m3u8');
+  assert.equal(direct.provisional,true);
+  assert.equal(direct.castEligible,false);
+  const result=await resolve('https://8.8.8.8/live.m3u8','https://cleanstream.cloud.run');
+  assert.equal(result.candidates[0].mediaUrl,'https://8.8.8.8/live.m3u8');
+  assert.equal(result.candidates[0].provisional,true);
 });

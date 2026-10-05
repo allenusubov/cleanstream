@@ -30,10 +30,28 @@ function wordHit(text,term){
   const needle=normalize(term);if(!needle)return false;
   return (` ${text} `).includes(` ${needle} `);
 }
+export function likelyEventPage(link){
+  try{
+    const url=new URL(link.url);
+    const path=decodeURIComponent(url.pathname||'').toLowerCase();
+    const visible=normalize(link.text||'');
+    const slug=(path.split('/').filter(Boolean).at(-1)||'').replace(/[-_+]+/g,' ');
+    if(/\/(?:news|blog|article|story|post)(?:\/|$)/i.test(path))return true;
+    if(/(?:^|[-_/])vs(?:[-_/]|$)/i.test(path)||wordHit(visible,'vs'))return true;
+    if(/\bversus\b/i.test(`${visible} ${slug}`))return true;
+    if(/(?:^|[-_/])at(?:[-_/]|$)/i.test(path) && slug.split(/\s+/).filter(Boolean).length>=4)return true;
+    if(/\/\d{3,}\/?$/i.test(path) && slug.split(/\s+/).filter(Boolean).length>=3)return true;
+    return false;
+  }catch{return true;}
+}
+function routeDepth(link){
+  try{return new URL(link.url).pathname.split('/').filter(Boolean).length;}catch{return 99;}
+}
 function categoryScore(link,key,aliases){
+  if(likelyEventPage(link))return -1000;
   const text=linkText(link),visible=normalize(link.text||'');
   const exact=normalize(key);
-  let score=0;
+  let score=Math.max(0,8-routeDepth(link)*2);
   if(wordHit(visible,exact))score+=30;
   if(wordHit(text,exact))score+=20;
   for(const alias of aliases){
@@ -42,9 +60,13 @@ function categoryScore(link,key,aliases){
   }
   // "football" is ambiguous. Prefer explicit NFL/CFB/SOCCER wording when it exists.
   if(['NFL','CFB','SOCCER'].includes(key) && !wordHit(text,key) && wordHit(text,'football'))score-=4;
+  if(key==='SOCCER' && /\b(?:nfl|cfb|college football|ncaa football)\b/.test(text))score-=40;
+  if(key==='NFL' && /\b(?:cfb|college football|ncaa football)\b/.test(text))score-=40;
+  if(key==='CFB' && /\bnfl\b/.test(text))score-=40;
   return score;
 }
 function eventScore(link){
+  if(likelyEventPage(link))return -1000;
   const text=linkText(link),visible=normalize(link.text||'');let score=0;
   for(const word of EVENT_WORDS){
     if(wordHit(visible,word))score+=12;
@@ -67,8 +89,8 @@ function dedupeLinks(links,base){
 export function profileFromLinks(links,base){
   const clean=dedupeLinks(links,base),categories={};
   for(const [key,aliases] of Object.entries(CATEGORY_ALIASES)){
-    const ranked=clean.map(link=>({link,score:categoryScore(link,key,aliases)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score);
-    if(ranked.length)categories[key]=[...new Set(ranked.map(x=>x.link.url))];
+    const ranked=clean.map(link=>({link,score:categoryScore(link,key,aliases)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score||routeDepth(a.link)-routeDepth(b.link));
+    if(ranked.length)categories[key]=[...new Set(ranked.map(x=>x.link.url))].slice(0,6);
   }
   const eventLists=[...new Set(clean.map(link=>({link,score:eventScore(link)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score).map(x=>x.link.url))];
   const hubs=clean.filter(link=>{

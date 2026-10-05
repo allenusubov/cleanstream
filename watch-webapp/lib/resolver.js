@@ -88,7 +88,7 @@ async function extract(url) {
       } catch {}
     }
     if(!found.size) await page.waitForTimeout(1200);
-    return [...found.values()].filter(x=>x.status<400).sort((a,b)=>Number(b.isHls)-Number(a.isHls)).slice(0,4);
+    return [...found.values()].filter(x=>x.status<400).sort((a,b)=>Number(b.isHls)-Number(a.isHls)).slice(0,8);
   });
 }
 function cors(response,origin) {
@@ -163,6 +163,16 @@ export async function validate(item,origin,{progress=false,depth=0}={}) {
     segmentDuration:playlist.duration,castEligible,quality,startupMs:Date.now()-start,
     verifiedAt:Date.now(),expiresAt:Date.now()+90000};
 }
+export function provisionalCandidate(item,sourceUrl=''){
+  const mediaUrl=item?.url||item?.mediaUrl;
+  if(!mediaUrl)return null;
+  try{if(new URL(mediaUrl).protocol!=='https:')return null;}catch{return null;}
+  return {
+    ...item,mediaUrl,isHls:Boolean(item.isHls||HLS.test(mediaUrl)),castEligible:false,provisional:true,
+    startupMs:0,verifiedAt:0,expiresAt:Date.now()+30000,
+    id:crypto.createHash('sha256').update(mediaUrl).digest('hex').slice(0,16),sourceUrl:sourceUrl||mediaUrl
+  };
+}
 export function clearResolved(url,origin) {for(const key of cache.keys()) if(key.startsWith(`${origin}|${url}|`)) cache.delete(key);}
 export async function resolve(url,origin,{progress=false}={}) {
   url=(await safeURL(url)).href;
@@ -172,11 +182,15 @@ export async function resolve(url,origin,{progress=false}={}) {
   if(inflight.has(key)) return inflight.get(key);
   const job=(async()=>{
     const extracted=await extract(url);
-    const results=await Promise.allSettled(extracted.map(item=>validate(item,origin,{progress})));
-    const candidates=results.filter(x=>x.status==='fulfilled').map(x=>({...x.value,id:crypto.createHash('sha256').update(x.value.mediaUrl).digest('hex').slice(0,16),sourceUrl:url}));
-    if(!candidates.length) throw new AppError(extracted.length?'DIRECT_BLOCKED':'NO_MEDIA',422);
+    if(!extracted.length)throw new AppError('NO_MEDIA',422);
+    // Browser playback is the compatibility test. Do not reject a discovered
+    // media URL just because a server-side CORS probe cannot approve it first.
+    const candidates=[...new Map(extracted.map(item=>{
+      const candidate=provisionalCandidate(item,url);return candidate?[candidate.mediaUrl,candidate]:null;
+    }).filter(Boolean)).values()];
+    if(!candidates.length)throw new AppError('DIRECT_BLOCKED',422);
     const value={sourceUrl:url,candidates};
-    cache.set(key,{expiresAt:Date.now()+60000,value});
+    cache.set(key,{expiresAt:Date.now()+30000,value});
     if(cache.size>100) cache.delete(cache.keys().next().value);
     return value;
   })().finally(()=>inflight.delete(key));

@@ -1,5 +1,18 @@
 export const CUSTOM_SOURCE_KEY='cleanstream.customSources.v1';
 const KNOWN_CATEGORIES=new Set(['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET']);
+export function likelyEventRoute(value){
+  try{
+    const url=new URL(value);
+    const path=decodeURIComponent(url.pathname||'').toLowerCase();
+    const slug=(path.split('/').filter(Boolean).at(-1)||'').replace(/[-_+]+/g,' ');
+    if(/\/(?:news|blog|article|story|post)(?:\/|$)/i.test(path))return true;
+    if(/(?:^|[-_/])vs(?:[-_/]|$)/i.test(path))return true;
+    if(/\bversus\b/i.test(slug))return true;
+    if(/(?:^|[-_/])at(?:[-_/]|$)/i.test(path) && slug.split(/\s+/).filter(Boolean).length>=4)return true;
+    if(/\/\d{3,}\/?$/i.test(path) && slug.split(/\s+/).filter(Boolean).length>=3)return true;
+    return false;
+  }catch{return true;}
+}
 
 export function normalizeCustomSourceUrl(value) {
   const raw=String(value||'').trim();
@@ -17,12 +30,12 @@ function cleanProfile(item={}){
     for(const [rawKey,values] of Object.entries(item.categories)){
       const key=String(rawKey).toUpperCase();if(!KNOWN_CATEGORIES.has(key))continue;
       const list=[],seen=new Set();
-      for(const value of (Array.isArray(values)?values:[values]))try{const url=normalizeProfileUrl(value);if(!seen.has(url)){seen.add(url);list.push(url);}}catch{}
+      for(const value of (Array.isArray(values)?values:[values]))try{const url=normalizeProfileUrl(value);if(!likelyEventRoute(url)&&!seen.has(url)){seen.add(url);list.push(url);}}catch{}
       if(list.length)categories[key]=list;
     }
   }
   const eventLists=[],seen=new Set();
-  for(const value of (Array.isArray(item.eventLists)?item.eventLists:[]))try{const url=normalizeProfileUrl(value);if(!seen.has(url)){seen.add(url);eventLists.push(url);}}catch{}
+  for(const value of (Array.isArray(item.eventLists)?item.eventLists:[]))try{const url=normalizeProfileUrl(value);if(!likelyEventRoute(url)&&!seen.has(url)){seen.add(url);eventLists.push(url);}}catch{}
   return {categories,eventLists};
 }
 export function loadCustomSources(storage=globalThis.localStorage) {

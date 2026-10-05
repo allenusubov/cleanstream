@@ -58,12 +58,11 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
     if(state){
       if(sources.length)state.textContent=countLabel(sources.length);
       else if(done)state.textContent=labels[status]||'NO SOURCES FOUND';
-      else if(discoveryState.get(event.id)?.running)state.textContent='CHECKING SOURCES';
       else state.textContent='';
     }
     if(action){
       if(playable){action.textContent='WATCH';action.disabled=false;action.dataset.mode='watch';}
-      else if(discoveryState.get(event.id)?.running){action.textContent='CHECKING';action.disabled=true;action.dataset.mode='checking';}
+      else if(discoveryState.get(event.id)?.running){action.textContent='CHECKING SOURCES';action.disabled=true;action.dataset.mode='checking';}
       else {action.textContent='CHECK SOURCES';action.disabled=false;action.dataset.mode='check';}
     }
   }
@@ -156,7 +155,11 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
 
   function beginCustomResults(title,q='',exploreMode=false) {
     stop();const token=++generation;latest=new Map();lastQuery=q||title;results.hidden=false;results.replaceChildren();home.classList.add('has-results');setExploreMode(exploreMode);
-    const heading=element('h2','results-title',exploreMode?'LIVE / UPCOMING':title);results.append(heading);return token;
+    const heading=element('h2',`results-title${exploreMode?' is-explore-title':''}`);
+    if(exploreMode){
+      heading.append(element('span','results-title-part','LIVE'),element('span','results-title-part','/'),element('span','results-title-part','UPCOMING'));
+    }else heading.textContent=title;
+    results.append(heading);return token;
   }
 
   function showEvent(event) {
