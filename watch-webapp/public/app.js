@@ -2,7 +2,7 @@ import {initSearch} from './search.js';
 import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
-import {loadCustomSources,addCustomSource,setCustomSourceEnabled,removeCustomSource,customSourceDomain} from './custom-sources.js';
+import {loadCustomSources,addCustomSources,setCustomSourceEnabled,removeCustomSource,customSourceDomain} from './custom-sources.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
 const playerView = $('[data-view="player"]');
@@ -560,8 +560,16 @@ $('#link-form').addEventListener('submit', event => {event.preventDefault();open
 $('#settings-button').addEventListener('click', openSettings);
 $('#custom-source-form').addEventListener('submit',event=>{
   event.preventDefault();settingsMessage.textContent='';
-  try{addCustomSource(customSourceInput.value);customSourceInput.value='';renderSettingsSources();settingsMessage.textContent='SOURCE ADDED';}
-  catch(error){settingsMessage.textContent=error.message||'ENTER A VALID SOURCE URL';customSourceInput.focus();}
+  try{
+    const result=addCustomSources(customSourceInput.value);
+    customSourceInput.value='';renderSettingsSources();
+    const parts=[];
+    if(result.added)parts.push(`${result.added} ${result.added===1?'SOURCE':'SOURCES'} ADDED`);
+    if(result.existing)parts.push(`${result.existing} ALREADY SAVED`);
+    if(result.invalid)parts.push(`${result.invalid} INVALID`);
+    if(result.limit)parts.push(`${result.limit} OVER LIMIT`);
+    settingsMessage.textContent=parts.join(' · ')||'SOURCES SAVED';
+  }catch(error){settingsMessage.textContent=error.message||'ENTER VALID SOURCE URLS';customSourceInput.focus();}
 });
 $('#settings-back').addEventListener('click',()=>{
   if(history.state?.cleanStream&&history.state.depth>0)history.back();

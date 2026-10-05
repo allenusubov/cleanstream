@@ -60,3 +60,27 @@ export function removeCustomSource(url,storage=globalThis.localStorage) {
 export function enabledCustomSourceUrls(storage=globalThis.localStorage) {
   return loadCustomSources(storage).filter(item=>item.enabled).map(item=>item.url);
 }
+
+export function splitCustomSourceInput(value) {
+  return String(value||'').split(/\r?\n/).map(item=>item.trim()).filter(Boolean);
+}
+
+export function addCustomSources(value,storage=globalThis.localStorage) {
+  const entries=Array.isArray(value)?value:splitCustomSourceInput(value);
+  if(!entries.length)throw new Error('ENTER AT LEAST ONE SOURCE URL');
+  const items=loadCustomSources(storage);
+  const byUrl=new Map(items.map(item=>[item.url,item]));
+  let added=0,existing=0,invalid=0,limit=0;
+  for(const entry of entries){
+    let url;
+    try{url=normalizeCustomSourceUrl(entry);}catch{invalid++;continue;}
+    const saved=byUrl.get(url);
+    if(saved){saved.enabled=true;existing++;continue;}
+    if(items.length>=40){limit++;continue;}
+    const item={url,enabled:true};
+    items.push(item);byUrl.set(url,item);added++;
+  }
+  if(!added&&!existing&&invalid)throw new Error('ENTER VALID SOURCE URLS');
+  const saved=saveCustomSources(items,storage);
+  return {items:saved,added,existing,invalid,limit};
+}

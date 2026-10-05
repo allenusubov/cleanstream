@@ -89,7 +89,7 @@ test('frozen HLS is rejected instead of called healthy',async()=>{
 });
 
 import {customRegistry} from '../lib/custom-sources.js';
-import {normalizeCustomSourceUrl,loadCustomSources,addCustomSource,setCustomSourceEnabled,removeCustomSource} from '../public/custom-sources.js';
+import {normalizeCustomSourceUrl,loadCustomSources,addCustomSource,addCustomSources,setCustomSourceEnabled,removeCustomSource} from '../public/custom-sources.js';
 
 test('custom source settings normalize, persist, toggle and remove browser registry rows',()=>{
   const data=new Map();
@@ -101,6 +101,18 @@ test('custom source settings normalize, persist, toggle and remove browser regis
   assert.equal(loadCustomSources(storage)[0].enabled,false);
   removeCustomSource('https://example.com/',storage);
   assert.equal(loadCustomSources(storage).length,0);
+});
+
+test('custom source settings accept multiple newline-separated URLs in one add',()=>{
+  const data=new Map();
+  const storage={getItem:key=>data.get(key)||null,setItem:(key,value)=>data.set(key,value)};
+  const result=addCustomSources('example.com\nhttps://second.test/path\n\nexample.com',storage);
+  assert.equal(result.added,2);
+  assert.equal(result.existing,1);
+  assert.deepEqual(loadCustomSources(storage),[
+    {url:'https://example.com/',enabled:true},
+    {url:'https://second.test/path',enabled:true}
+  ]);
 });
 
 test('custom source URLs become bounded wildcard discovery adapters',async()=>{
