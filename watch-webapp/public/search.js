@@ -96,13 +96,13 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
         for(const alternative of data.alternatives||[])results.append(row(alternative,token));
         return;
       }
-      let automatic=0;let shown=0;
+      let shown=0;
       const more=element('button','text-action more-events','MORE EVENTS');more.type='button';
       const append=()=>{
         more.remove();
         for(const item of data.events.slice(shown,shown+12)){
           const eligible=Date.parse(item.startTime)<=Date.now()+45*60000;
-          results.append(row(item,token,eligible && item.provider!=='youtube' && automatic++<1));
+          results.append(row(item,token,eligible && item.provider!=='youtube'));
         }
         shown+=12;if(shown<data.events.length)results.append(more);
       };

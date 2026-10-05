@@ -41,8 +41,11 @@ export async function catalogSearch(q) {
 }
 export async function streamedPages(event) {
   const raw=await streamedData('/matches/all');
-  const matches=raw.filter(m=>event.catalogId?m.id===event.catalogId:
-    Math.abs(Number(m.date)-Date.parse(event.startTime))<3*3600000 && matchesParticipants(m.title,event.participants));
+  const matches=raw.filter(m=>{
+    if(event.catalogId)return m.id===event.catalogId;
+    const text=[m.title,m.teams?.home?.name,m.teams?.away?.name,m.league,m.category].filter(Boolean).join(' ');
+    return Math.abs(Number(m.date)-Date.parse(event.startTime))<6*3600000 && matchesParticipants(text,event.participants);
+  });
   const refs=matches.flatMap(m=>m.sources||[]).slice(0,4);
   const results=await Promise.allSettled(refs.map(s=>streamedData(`/stream/${encodeURIComponent(s.source)}/${encodeURIComponent(s.id)}`)));
   return results.filter(r=>r.status==='fulfilled').flatMap(r=>r.value).filter(s=>{

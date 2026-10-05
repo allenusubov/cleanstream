@@ -4,7 +4,7 @@ import {parseQuery,selectEvents,matchesParticipants} from '../public/events.js';
 import {privateAddress,safeURL,fetchLimited,WorkPool} from '../lib/network.js';
 import {parsePlaylist,validate} from '../lib/resolver.js';
 import {normalizeEvent} from '../lib/schedules.js';
-import {watchable,rank,eventJob} from '../lib/discovery.js';
+import {watchable,rank,eventJob,linkMatchesEvent} from '../lib/discovery.js';
 test('team, abbreviation, typo and matchup queries remain distinct',()=>{
   for(const q of ['KNICKS','NYK','NEW YORK KNICKS','kniks'])assert.equal(parseQuery(q).teams[0].id,'18');
   assert.equal(parseQuery('KNICKS CELTICS').kind,'matchup');
@@ -19,6 +19,12 @@ test('nonexistent matchups return no events, without confusing individual teams'
   assert.equal(selectEvents([event],parseQuery('knicks celtics')).length,1);
   assert.equal(matchesParticipants('Knicks vs Celtics',event.participants),true);
   assert.equal(matchesParticipants('Knicks vs Lakers',event.participants),false);
+});
+
+test('source discovery can match an event from a clean URL slug even when anchor text is empty',()=>{
+  const event={participants:[{id:'26',name:'Utah Jazz'},{id:'7',name:'Denver Nuggets'}]};
+  assert.equal(linkMatchesEvent({url:'https://streamseast.eu/nba/401914127/jazz-vs-nuggets',text:''},event),true);
+  assert.equal(linkMatchesEvent({url:'https://streamseast.eu/nba/401914127/lakers-vs-suns',text:''},event),false);
 });
 test('private and mapped network destinations are rejected',async()=>{
   for(const ip of ['127.0.0.2','10.1.1.1','169.254.169.254','100.64.1.1','192.168.1.1','::1','::ffff:127.0.0.1','::ffff:7f00:1','fc00::1'])assert.equal(privateAddress(ip),true,ip);

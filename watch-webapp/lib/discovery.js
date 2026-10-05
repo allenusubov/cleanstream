@@ -7,25 +7,78 @@ import {streamedPages} from './catalog.js';
 import {directoryLinks} from './directory.js';
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
 const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map();
-const pool=new WorkPool(2,8,120);
+const pool=new WorkPool(2,12,120);
 const idFor=value=>crypto.createHash('sha256').update(value).digest('hex').slice(0,16);
-async function index(site) {
-  const old=indexes.get(site.id);
+function hostAllowed(host,allowedHosts=[]) {
+  return !allowedHosts.length || allowedHosts.some(allowed=>host===allowed || host.endsWith(`.${allowed}`));
+}
+function eventQuery(event) {
+  return event.participants?.length ? event.participants.map(p=>p.name).join(' vs ') : event.title;
+}
+function fillTemplate(template,event) {
+  const league=String(event.league||event.sport||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  const sport=String(event.sport||event.league||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  return template.replaceAll('{league}',league).replaceAll('{sport}',sport).replaceAll('{query}',encodeURIComponent(eventQuery(event)));
+}
+export function linkMatchesEvent(link,event) {
+  try {
+    const url=new URL(link.url);
+    const slug=decodeURIComponent(`${url.pathname} ${url.search}`).replace(/[-_+]+/g,' ');
+    return matchesParticipants(`${link.text||''} ${slug}`,event.participants||[]);
+  } catch { return false; }
+}
+async function readIndex(site,indexUrl,event) {
+  const cacheKey=`${site.id}|${indexUrl}`;
+  const old=indexes.get(cacheKey);
   if(old && Date.now()-old.time<120000) return old.links;
-  if(indexJobs.has(site.id)) return indexJobs.get(site.id);
+  if(indexJobs.has(cacheKey)) return indexJobs.get(cacheKey);
   const job=(async()=>{
-    const response=await fetchLimited(site.indexUrl,{limit:2*1024*1024});
-    const staticLinks=directoryLinks(response.body.toString(),response.url,site.allowedHosts);
-    if(!site.dynamic){indexes.set(site.id,{time:Date.now(),links:staticLinks});return staticLinks;}
-    return withPage(async page=>{
-    await visit(page,site.indexUrl);
-    if(site.waitSelector)await page.locator(site.waitSelector).first().waitFor({timeout:5000}).catch(()=>{});
-    const links=await page.locator('a[href]').evaluateAll(nodes=>nodes.slice(0,600).map(a=>({url:a.href,text:a.getAttribute('aria-label')||a.textContent?.trim()||a.closest('.row')?.querySelector('.name')?.textContent||''})));
-    const valid=links.filter(link=>{try{return ['http:','https:'].includes(new URL(link.url).protocol)&&(!site.allowedHosts?.length || site.allowedHosts.includes(new URL(link.url).hostname));}catch{return false;}});
-    indexes.set(site.id,{time:Date.now(),links:valid});return valid;
-    });
-  })().finally(()=>indexJobs.delete(site.id));
-  indexJobs.set(site.id,job);return job;
+    let staticLinks=[], staticError=null;
+    try {
+      const response=await fetchLimited(indexUrl,{limit:2*1024*1024});
+      staticLinks=directoryLinks(response.body.toString(),response.url,site.allowedHosts);
+      if(!site.dynamic || staticLinks.some(link=>linkMatchesEvent(link,event))) {
+        indexes.set(cacheKey,{time:Date.now(),links:staticLinks});
+        return staticLinks;
+      }
+    } catch(error) { staticError=error; }
+    if(!site.dynamic) {
+      if(staticError) throw staticError;
+      indexes.set(cacheKey,{time:Date.now(),links:staticLinks});
+      return staticLinks;
+    }
+    try {
+      const dynamicLinks=await withPage(async page=>{
+        await visit(page,indexUrl);
+        if(site.waitSelector)await page.locator(site.waitSelector).first().waitFor({timeout:5000}).catch(()=>{});
+        const links=await page.locator('a[href]').evaluateAll(nodes=>nodes.slice(0,800).map(a=>({
+          url:a.href,
+          text:a.getAttribute('aria-label')||a.textContent?.trim()||a.closest('.row')?.querySelector('.name')?.textContent||''
+        })));
+        return links.filter(link=>{try{const u=new URL(link.url);return ['http:','https:'].includes(u.protocol)&&hostAllowed(u.hostname,site.allowedHosts);}catch{return false;}});
+      });
+      const merged=[...new Map([...staticLinks,...dynamicLinks].map(link=>[link.url,link])).values()];
+      indexes.set(cacheKey,{time:Date.now(),links:merged});
+      return merged;
+    } catch(error) {
+      if(staticLinks.length) return staticLinks;
+      throw staticError||error;
+    }
+  })().finally(()=>indexJobs.delete(cacheKey));
+  indexJobs.set(cacheKey,job);return job;
+}
+async function genericPages(site,event) {
+  const templates=[...(site.indexUrls||[]),...(site.indexUrl?[site.indexUrl]:[]),...(site.searchUrls||[])];
+  const urls=[...new Set(templates.map(template=>fillTemplate(template,event)))];
+  const found=[];
+  for(const indexUrl of urls) {
+    try {
+      const links=await readIndex(site,indexUrl,event);
+      for(const link of links) if(linkMatchesEvent(link,event)) found.push(link);
+      if(found.length>=6) break;
+    } catch { /* Try the next bounded index/search page. */ }
+  }
+  return [...new Map(found.map(page=>[page.url,page])).values()].slice(0,6);
 }
 export function rank(sources) {
   return [...sources].sort((a,b)=>b.score-a.score).map((s,i)=>({...s,label:i===0?'BEST':i===1?'GOOD':'BACKUP'}));
@@ -51,8 +104,7 @@ export function eventJob(event,origin) {
         const statsKey=`${site.id}|${event.league}`;
         const stats=history.get(statsKey)||{success:0,attempts:0,totalMs:0};
         try {
-          const pages=site.events?.[event.id] ? [{url:site.events[event.id],text:event.title}] : site.type==='streamed'?await streamedPages(event):
-            (await index(site)).filter(link=>matchesParticipants(link.text,event.participants));
+          const pages=site.events?.[event.id] ? [{url:site.events[event.id],text:event.title}] : site.type==='streamed'?await streamedPages(event):await genericPages(site,event);
           const unique=[...new Map(pages.map(p=>[p.url,p])).values()].slice(0,3);
           matched+=unique.length;
           await Promise.allSettled(unique.map(async page=>{
