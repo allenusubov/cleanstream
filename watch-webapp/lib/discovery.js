@@ -248,6 +248,14 @@ export function watchable(event,now=Date.now()) {
   const start=Date.parse(event.startTime);
   return event.status!=='finished' && start<=now+45*60000 && start>now-6*3600000;
 }
+export function siteSupportsEvent(site,event) {
+  // Source adapters are general by default. A registry entry is only sport-gated
+  // when it explicitly opts into restriction with restrictLeagues=true.
+  if(site?.restrictLeagues!==true)return true;
+  const leagues=Array.isArray(site?.leagues)?site.leagues.map(value=>String(value).toUpperCase()):[];
+  const eventKeys=[event?.league,event?.sport].map(value=>String(value||'').toUpperCase()).filter(Boolean);
+  return leagues.includes('*')||eventKeys.some(key=>leagues.includes(key));
+}
 async function fastCandidates(target,origin) {
   if(target.kind==='media') {
     const item=await validate({url:target.url,isHls:Boolean(target.isHls||HLS.test(target.url))},origin,{progress:false});
@@ -258,7 +266,11 @@ async function fastCandidates(target,origin) {
 }
 export function eventJob(event,origin,customSites=[]) {
   if(!watchable(event)) throw new AppError('NOT_STARTED',409);
-  const customKey=idFor(customSites.map(site=>site.indexUrls?.[0]||site.id).sort().join('|'));
+  const customKey=idFor(customSites.map(site=>JSON.stringify({
+    root:site.indexUrls?.[0]||site.id,
+    categories:site.categories||{},
+    eventListUrls:site.eventListUrls||[]
+  })).sort().join('|'));
   const key=`${origin}|${event.id}|${customKey}`;
   const old=jobs.get(key);
   if(old && (!old.done || old.expiresAt>Date.now())) return old;
@@ -277,7 +289,7 @@ export function eventJob(event,origin,customSites=[]) {
         try{identity=new URL(identity).hostname.replace(/^www\./i,'');}catch{}
         if(!byHost.has(identity))byHost.set(identity,site);
       }
-      const sites=[...byHost.values()].filter(s=>(s.type==='streamed'||s.custom||event.participants?.length>=2) && (s.leagues.includes('*')||s.leagues.includes(event.league))).slice(0,24);
+      const sites=[...byHost.values()].filter(s=>(s.type==='streamed'||s.custom||event.participants?.length>=2) && siteSupportsEvent(s,event)).slice(0,24);
       let matched=0, unavailable=0;
       await Promise.allSettled(sites.map(async site=>{
         const statsKey=`${site.id}|${event.league}`;

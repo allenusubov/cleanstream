@@ -23,6 +23,8 @@ Configured/authorized sources are discovered with a bounded hierarchy instead of
 
 Each distinct working mirror is validated independently and returned as its own source result. Mirrors from the same site intentionally keep the same displayed domain name. Index/category results are cached for two minutes and mirror discovery for one minute so repeated searches do not restart navigation from zero.
 
+Source adapters are general by default: a source is not excluded just because one sport route is known. A source is sport-gated only when its adapter explicitly sets `restrictLeagues: true`. Missing category routes fall back to the source's event-list/root pages.
+
 Optional registry fields for site-specific tuning:
 
 - `categories`: map league/sport names to one or more category URLs.
@@ -30,6 +32,7 @@ Optional registry fields for site-specific tuning:
 - `mirrorSelector`: selector for mirror controls when the default buttons/tabs/links are not enough.
 - `mirrorTextPattern`: regular-expression string for mirror labels.
 - `maxMirrors`: bounded mirror count (default 10).
+- `restrictLeagues`: opt-in sport gating for a deliberately narrow adapter.
 - `mirrorSettleMs`: short wait after changing a mirror tab (default 500 ms).
 
 The generic adapter is intended for public or authorized source pages supplied in the registry.

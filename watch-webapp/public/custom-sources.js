@@ -52,6 +52,22 @@ export function setCustomSourceEnabled(url,enabled,storage=globalThis.localStora
 export function setCustomSourceProfile(url,profile,storage=globalThis.localStorage){
   const normalized=cleanProfile(profile);return saveCustomSources(loadCustomSources(storage).map(item=>item.url===url?{...item,...normalized}:item),storage);
 }
+export function mergeCustomSourceProfile(url,profile,storage=globalThis.localStorage){
+  const learned=cleanProfile(profile);
+  return saveCustomSources(loadCustomSources(storage).map(item=>{
+    if(item.url!==url)return item;
+    const categories={};
+    const keys=new Set([...Object.keys(item.categories||{}),...Object.keys(learned.categories||{})]);
+    for(const key of keys){
+      const merged=[];
+      for(const value of [...(item.categories?.[key]||[]),...(learned.categories?.[key]||[])])if(!merged.includes(value)&&merged.length<3)merged.push(value);
+      if(merged.length)categories[key]=merged;
+    }
+    const eventLists=[];
+    for(const value of [...(item.eventLists||[]),...(learned.eventLists||[])])if(!eventLists.includes(value)&&eventLists.length<6)eventLists.push(value);
+    return {...item,categories,eventLists};
+  }),storage);
+}
 export function removeCustomSource(url,storage=globalThis.localStorage) {return saveCustomSources(loadCustomSources(storage).filter(item=>item.url!==url),storage);}
 export function enabledCustomSources(storage=globalThis.localStorage) {return loadCustomSources(storage).filter(item=>item.enabled);}
 export function enabledCustomSourceUrls(storage=globalThis.localStorage) {return enabledCustomSources(storage).map(item=>item.url);}
@@ -68,12 +84,18 @@ export function profileLines(item){
   const lines=[];for(const [key,urls] of Object.entries(item.categories||{}))for(const url of urls)lines.push(`${key} ${url}`);
   for(const url of item.eventLists||[])lines.push(`EVENTS ${url}`);return lines.join('\n');
 }
-export function parseProfileLines(value){
+export function parseProfileLines(value,baseUrl=''){
   const categories={},eventLists=[];let invalid=0;
   for(const raw of String(value||'').split(/\r?\n/)){
     const line=raw.trim();if(!line)continue;
-    const match=line.match(/^(\S+)\s+(https?:\/\/\S+)$/i);if(!match){invalid++;continue;}
-    let [,label,url]=match;label=label.toUpperCase();try{url=normalizeProfileUrl(url);}catch{invalid++;continue;}
+    const match=line.match(/^(\S+)\s+(\S+)$/i);if(!match){invalid++;continue;}
+    let [,label,target]=match;label=label.toUpperCase();
+    let url;
+    try{
+      if(/^\//.test(target)&&baseUrl)url=normalizeProfileUrl(new URL(target,baseUrl).href);
+      else if(!target.includes('://')&&baseUrl&&/^[a-z0-9._~!$&'()*+,;=:@%\-/]+$/i.test(target))url=normalizeProfileUrl(new URL(target,baseUrl).href);
+      else url=normalizeProfileUrl(target);
+    }catch{invalid++;continue;}
     if(label==='EVENT'||label==='EVENTS'||label==='LIVE'||label==='SCHEDULE'){if(!eventLists.includes(url)&&eventLists.length<6)eventLists.push(url);continue;}
     if(!KNOWN_CATEGORIES.has(label)){invalid++;continue;}categories[label]??=[];if(!categories[label].includes(url)&&categories[label].length<3)categories[label].push(url);
   }

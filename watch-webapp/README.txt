@@ -11,6 +11,9 @@ Minimal live-event search and direct-playback web app.
 - Publish a source after a fast direct-playback check, then continue deeper live-HLS stability verification in the background.
 - Play accepted media directly from the original source to the viewer. `/api/media` is intentionally disabled; Clean Stream does not relay the full video through Cloud Run.
 - Preserve search/player state in the URL so refresh and browser back work normally.
+- Treat source adapters as general by default; sport gating must be explicitly opted into.
+- Custom source TEST results merge with manual routes instead of overwriting them.
+- Custom route editing accepts full URLs or root-relative paths such as `NFL /nfl`.
 
 ## Optional search credentials
 

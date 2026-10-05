@@ -40,7 +40,8 @@
     "dynamic": true,
     "enabled": true,
     "status": "User-confirmed working domain; discover event pages from the NBA/index pages",
-    "displayHost": "streamseast.eu"
+    "displayHost": "streamseast.eu",
+    "restrictLeagues": true
   },
   {
     "id": "tvsportslive",

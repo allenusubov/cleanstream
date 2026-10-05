@@ -393,12 +393,15 @@ a { text-decoration: none; }
 .custom-source-row:last-child {border-bottom:1px solid var(--hairline);}
 .custom-source-copy {min-width:0;display:flex;flex-direction:column;gap:6px;}
 .custom-source-domain {
+  color:var(--fg);
+  text-decoration:none;
   font-size:clamp(18px,2vw,28px);
   font-weight:700;
   line-height:1.05;
   letter-spacing:-.04em;
   overflow-wrap:anywhere;
 }
+.custom-source-domain:hover,.custom-source-domain:focus-visible {text-decoration:underline;text-underline-offset:3px;outline:none;}
 .custom-source-status {
   min-height:1em;
   color:var(--muted);
