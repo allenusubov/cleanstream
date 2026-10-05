@@ -1,5 +1,6 @@
 import {initSearch} from './search.js';
 import {YouTubePlayer} from './youtube-player.js';
+import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
@@ -49,7 +50,10 @@ let remoteProgress=0;
 let remotePosition=-1;
 let recoveryCycles=0;
 const youtube=new YouTubePlayer($('#youtube-player'),()=>syncControls(),error=>say(readable(error)));
+const twitch=new TwitchPlayer($('#twitch-player'),()=>syncControls(),error=>say(readable(error)));
 const isYouTube=()=>candidate?.provider==='youtube';
+const isTwitch=()=>candidate?.provider==='twitch';
+const isEmbedded=()=>isYouTube()||isTwitch();
 const friendly = {
   INVALID_URL:'ENTER A VALID PUBLIC LINK', ENTER_EVENT:'ENTER AN EVENT',
   SOURCE_UNAVAILABLE:"STREAM UNAVAILABLE — THIS SOURCE ISN'T WORKING RIGHT NOW",
@@ -60,12 +64,13 @@ const friendly = {
   DIRECT_ONLY:'THIS STREAM NEEDS TO BE OPENED AGAIN', NOT_STARTED:'THIS EVENT HAS NOT STARTED',
   CAST_UNAVAILABLE:'THIS SOURCE IS UNAVAILABLE ON YOUR TV',
   YOUTUBE_UNAVAILABLE:'YOUTUBE PLAYBACK UNAVAILABLE — TRY THE SOURCE LINK',
-  YOUTUBE_EMBED_BLOCKED:'THIS VIDEO MUST BE WATCHED ON YOUTUBE — USE SOURCE'
+  YOUTUBE_EMBED_BLOCKED:'THIS VIDEO MUST BE WATCHED ON YOUTUBE — USE SOURCE',
+  TWITCH_UNAVAILABLE:'TWITCH PLAYBACK UNAVAILABLE — TRY THE SOURCE LINK'
 };
 const search = initSearch(async (item, items, event) => {
   currentEvent=event; alternatives=items; failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;
   sourceUrl=item.sourceUrl;sourceLink.href=sourceUrl;streamInput.value=sourceUrl;
-  navigate({view:'player',url:sourceUrl,q:search.query,event:event.id,live:item.provider==='youtube'?item.live:undefined});
+  navigate({view:'player',url:sourceUrl,q:search.query,event:event.id,live:['youtube','twitch'].includes(item.provider)?item.live:undefined});
   search.stop();
   showView('player');userPaused=false;
   const toTV=casting();
@@ -81,7 +86,7 @@ const search = initSearch(async (item, items, event) => {
 });
 async function playItem(item,signal,toTV=false) {
   sourceUrl=item.sourceUrl||sourceUrl;sourceLink.href=sourceUrl;
-  if(item.provider==='youtube') {
+  if(['youtube','twitch'].includes(item.provider)) {
     // A video playing on a receiver must not overlap a new embedded player.
     if(casting())castContext.endCurrentSession(true);
     await attachLocal(item,signal);userPaused=false;return;
@@ -162,6 +167,7 @@ function setBusy(value) {
 function destroyLocal() {
   generation++;
   youtube.destroy();
+  twitch.destroy();
   hls?.destroy();
   hls = null;
   video.pause();
@@ -175,7 +181,21 @@ function destroyLocal() {
 }
 function latestLocalPosition() {
   if(isYouTube())return youtube.target;
+  if(isTwitch())return null;
   return livePosition({live:localLive||video.duration===Infinity,seekable:video.seekable,syncPosition:hls?.liveSyncPosition,segmentDuration});
+}
+function knownLive() {
+  if(isYouTube())return youtube.live||candidate?.live===true;
+  if(isTwitch())return candidate?.live===true;
+  return localLive||candidate?.live===true||video.duration===Infinity||Boolean(casting()&&remotePlayer?.liveSeekableRange&&!remotePlayer.liveSeekableRange.isLiveDone);
+}
+async function waitForLocalLiveTarget(timeout=2500) {
+  const started=Date.now();
+  while(Date.now()-started<timeout){
+    const target=latestLocalPosition();if(target!==null)return target;
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  return latestLocalPosition();
 }
 function remoteLivePosition() {
   const range = remotePlayer?.liveSeekableRange;
@@ -184,20 +204,21 @@ function remoteLivePosition() {
 }
 function syncControls() {
   const onTV = casting();
-  const paused = onTV ? remotePlayer.isPaused : isYouTube()?youtube.paused:video.paused;
+  const paused = onTV ? remotePlayer.isPaused : isYouTube()?youtube.paused:isTwitch()?twitch.paused:video.paused;
   playButton.textContent = paused ? 'PLAY' : 'PAUSE';
-  muteButton.textContent = (onTV ? remotePlayer.isMuted : isYouTube()?youtube.muted:video.muted) ? 'UNMUTE' : 'MUTE';
+  muteButton.textContent = (onTV ? remotePlayer.isMuted : isYouTube()?youtube.muted:isTwitch()?twitch.muted:video.muted) ? 'UNMUTE' : 'MUTE';
   const target = onTV ? remoteLivePosition() : latestLocalPosition();
   const position = onTV ? remotePlayer.currentTime : isYouTube()?youtube.time:video.currentTime;
   const progressing = onTV
     ? remotePlayer.playerState === 'PLAYING'
-    : isYouTube()?!youtube.paused&&!youtube.buffering:!buffering && !video.ended && Date.now() - lastProgress < 5000;
-  const atLive = target !== null && !paused && progressing && !busy && !castLoading &&
+    : isYouTube()?!youtube.paused&&!youtube.buffering:isTwitch()?!twitch.paused:!buffering && !video.ended && Date.now() - lastProgress < 5000;
+  const live=knownLive();
+  const atLive = isTwitch()?live&&!paused:target !== null && !paused && progressing && !busy && !castLoading &&
     position >= target - Math.max(2, segmentDuration / 2);
-  liveButton.disabled = busy || target === null;
+  liveButton.disabled = busy || !live;
   liveButton.classList.toggle('is-live', atLive);
   liveButton.setAttribute('aria-label', atLive ? 'Playing live' : 'Go to live');
-  liveButton.title = target === null ? 'Live position unavailable' : atLive ? 'At the latest available video' : 'Jump to live';
+  liveButton.title = live ? (atLive ? 'At the latest available video' : 'Jump to live') : 'Live position unavailable';
   stage.classList.toggle('is-casting', onTV);
   if (onTV && !busy) placeholder('PLAYING ON TV');
   updateTVButton();
@@ -260,6 +281,10 @@ async function attachLocal(item, signal) {
   if(item.provider==='youtube') {
     placeholder('LOADING');await youtube.load(item,signal);
     playerEmpty.classList.add('is-hidden');say();syncControls();return;
+  }
+  if(item.provider==='twitch') {
+    placeholder('LOADING');await twitch.load(item,signal);
+    localLive=true;playerEmpty.classList.add('is-hidden');say();syncControls();return;
   }
   localLive=item.live===true;
   segmentDuration=item.segmentDuration||6;
@@ -384,7 +409,7 @@ function updateTVButton() {
   const airplay = typeof video.webkitShowPlaybackTargetPicker === 'function';
   const castReady = Boolean(castContext);
   const chromium=/Chrome|Chromium|Edg\//.test(navigator.userAgent);
-  tvMode = isYouTube()?null:chromium?(castReady?'cast':null):airplay?'airplay':castReady?'cast':null;
+  tvMode = isEmbedded()?null:chromium?(castReady?'cast':null):airplay?'airplay':castReady?'cast':null;
   tvButton.hidden = !tvMode;
   tvButton.textContent = tvMode === 'airplay' ? 'AIRPLAY' : 'CAST';
   tvButton.classList.toggle('is-connected', casting() || Boolean(video.webkitCurrentPlaybackTargetIsWireless));
@@ -404,7 +429,7 @@ async function loadOnTV(item, signal) {
   castLoading = true;
   updateTVButton();
   try {
-    if(item.provider==='youtube'||item.castEligible === false) throw new Error('CAST_UNAVAILABLE');
+    if(['youtube','twitch'].includes(item.provider)||item.castEligible === false) throw new Error('CAST_UNAVAILABLE');
     const live=Boolean(item.live);
     segmentDuration=item.segmentDuration || segmentDuration;
     if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -499,6 +524,7 @@ playButton.addEventListener('click', async () => {
   if (casting()) { userPaused=!remotePlayer.isPaused;remoteController.playOrPause(); return; }
   if (!candidate || busy) return;
   if(isYouTube()){userPaused=!youtube.paused;youtube.paused?youtube.play():youtube.pause();syncControls();return;}
+  if(isTwitch()){userPaused=!twitch.paused;twitch.paused?twitch.play():twitch.pause();syncControls();return;}
   if (!video.paused) {userPaused=true;video.pause();}
   else {
     try { userPaused=false;await video.play(); say(); }
@@ -508,14 +534,16 @@ playButton.addEventListener('click', async () => {
 muteButton.addEventListener('click', () => {
   if (casting()) remoteController.muteOrUnmute();
   else if(isYouTube())youtube.mute();
+  else if(isTwitch())twitch.mute();
   else video.muted = !video.muted;
   syncControls();
 });
 liveButton.addEventListener('click', async () => {
   if(isYouTube()){userPaused=false;youtube.jump();syncControls();return;}
+  if(isTwitch()){userPaused=false;twitch.jump();syncControls();return;}
   if (casting()) {
     const target = remoteLivePosition();
-    if (target === null) return;
+    if (target === null) {say('LIVE POSITION IS STILL LOADING');return;}
     const media = castSession()?.getMediaSession();
     const request = new chrome.cast.media.SeekRequest();
     userPaused=false;request.currentTime = target;
@@ -523,8 +551,8 @@ liveButton.addEventListener('click', async () => {
     media?.seek(request, () => say(), () => say('COULD NOT JUMP TO LIVE — PRESS REFRESH'));
     return;
   }
-  const target = latestLocalPosition();
-  if (target === null) return;
+  const target = await waitForLocalLiveTarget();
+  if (target === null) {say('LIVE POSITION IS STILL LOADING');return;}
   userPaused=false;video.currentTime = target;
   try { await video.play(); say(); }
   catch { say('PRESS PLAY TO RESUME'); }
@@ -533,7 +561,7 @@ $('#fullscreen-button').addEventListener('click', async () => {
   if (casting()) { say('VIDEO IS PLAYING ON YOUR TV'); return; }
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
-    else if (!isYouTube() && video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+    else if (!isEmbedded() && video.webkitEnterFullscreen) video.webkitEnterFullscreen();
     else await stage.requestFullscreen?.();
   } catch { say('FULLSCREEN IS UNAVAILABLE'); }
 });
@@ -545,7 +573,7 @@ video.addEventListener('waiting', () => { buffering = true; syncControls(); });
 video.addEventListener('ended', () => { buffering = true; syncControls(); });
 video.addEventListener('error', () => {
   buffering = true;
-  if (!busy && candidate && !casting() && !isYouTube()) recoverStream();
+  if (!busy && candidate && !casting() && !isEmbedded()) recoverStream();
   syncControls();
 });
 video.addEventListener('timeupdate', () => {
@@ -556,7 +584,7 @@ video.addEventListener('pause', () => {if(!busy && !recovering && !castLoading &
 setInterval(() => {
   if (!playerView.classList.contains('is-active')) return;
   syncControls();
-  if(!isYouTube() && !userPaused && !busy && !recovering && !casting() && lastProgress && Date.now()-lastProgress>18000)recoverStream();
+  if(!isEmbedded() && !userPaused && !busy && !recovering && !casting() && lastProgress && Date.now()-lastProgress>18000)recoverStream();
   if(!busy && !recovering && lastProgress && Date.now()-lastRecovery>60000 && !buffering){recoveryAttempts=0;recoveryCycles=0;}
   if(castOwned && castSession() && !busy && !castLoading && !recovering){
     if(remotePlayer?.isMediaLoaded && remotePlayer.isPaused)userPaused=true;
@@ -565,7 +593,7 @@ setInterval(() => {
   }
   // Native Safari doesn't expose HLS playlist state. Read the same small playlist
   // periodically to distinguish live from VOD/ended streams without re-extracting.
-  if (candidate?.isHls && !hls && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
+  if (candidate?.isHls && !hls && !isEmbedded() && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
     nativeProbeAt = Date.now(); nativeProbePending = true;
     const thisGeneration = generation;
     const controller = new AbortController();

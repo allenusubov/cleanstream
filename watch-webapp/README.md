@@ -1,33 +1,40 @@
-# WATCH
+# CLEAN STREAM
 
-Deployable web version of the clean player prototype.
+Minimal live-event search and direct-playback web app.
 
-## What it does
+## Current behavior
 
-- User pastes a normal webpage URL.
-- The backend opens that page in headless Chromium.
-- It looks for ordinary HTML5 video sources, MP4/WebM media, and HLS manifests.
-- It proxies compatible media back into the minimal WATCH player.
-- HLS plays natively in Safari and through Hls.js in Chrome.
+- Search NBA schedules and live/upcoming events.
+- Search YouTube Live when `YOUTUBE_API_KEY` is configured.
+- Search Twitch live channels when `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` are configured.
+- Resolve configured event/source pages with Playwright only when needed.
+- Publish a source after a fast direct-playback check, then continue deeper live-HLS stability verification in the background.
+- Play accepted media directly from the original source to the viewer. `/api/media` is intentionally disabled; Clean Stream does not relay the full video through Cloud Run.
+- Preserve search/player state in the URL so refresh and browser back work normally.
 
-It is intended for media/pages you are authorized to access. It does not bypass DRM, subscriptions, authentication, or other access controls.
+## Optional search credentials
 
-## Recommended deployment: Render
+### YouTube Live
+Set:
 
-1. Put this folder in a GitHub repo.
-2. In Render, create a **New Web Service**.
-3. Connect the repo.
-4. Render will detect `render.yaml` / `Dockerfile`.
-5. Deploy.
-6. Open the generated `onrender.com` URL.
+- `YOUTUBE_API_KEY`
 
-The server exposes `/health` for health checks.
+The server uses the official YouTube Data API for live search and the official embedded player for playback.
 
-## Railway
+### Twitch
+Register a Twitch developer application and set:
 
-This repo also includes `railway.json` and the same Dockerfile.
+- `TWITCH_CLIENT_ID`
+- `TWITCH_CLIENT_SECRET`
 
-## Notes
+The secret stays server-side. Clean Stream obtains an app access token and uses Twitch's official live channel search. Playback uses Twitch's official embedded player.
 
-The first request after a cold start can take longer because Chromium has to launch.
-Some sites do not expose media until a human clicks their player, or use DRM/session controls. Those pages may return `NO PLAYABLE MEDIA FOUND` in this first version.
+## Deployment
+
+The current production target is Google Cloud Run using the included Dockerfile. The service exposes `/health` for health checks.
+
+Keep request-based billing and minimum instances at zero if minimizing idle compute is important.
+
+## Access model
+
+This project is intended for public or authorized media/pages. It does not bypass DRM, subscriptions, authentication, or other access controls.

@@ -11,5 +11,5 @@ export function youtubeId(value) {
   }catch{return null;}
 }
 export function youtubeCandidate(id,live=true) {
-  return {id:`youtube-${id}`,provider:'youtube',videoId:id,sourceUrl:`https://www.youtube.com/watch?v=${id}`,live,castEligible:false,label:'YOUTUBE'};
+  return {id:`youtube-${id}`,provider:'youtube',videoId:id,sourceUrl:`https://www.youtube.com/watch?v=${id}`,live,castEligible:false,displayName:'YOUTUBE.COM'};
 }

@@ -36,9 +36,13 @@ export async function getEvents(rawQuery) {
     // One team's complete published season is enough to establish whether a matchup exists.
     requests=[1,2,3].map(type=>data(`/teams/${query.teams[0].id}/schedule?season=${season}&seasontype=${type}`,30*60000));
   } else {
-    requests=Array.from({length:7},(_,i)=>{
-      const date=new Date(now.getTime()+i*86400000).toISOString().slice(0,10).replaceAll('-','');
-      return data(`/scoreboard?dates=${date}`,i===0?60000:30*60000);
+    // Include the previous UTC date so late-evening games in North America do not
+    // disappear after UTC midnight. Filter/sort after normalization instead of
+    // trusting Cloud Run's calendar date as the viewer's local day.
+    requests=Array.from({length:8},(_,index)=>{
+      const offset=index-1;
+      const date=new Date(now.getTime()+offset*86400000).toISOString().slice(0,10).replaceAll('-','');
+      return data(`/scoreboard?dates=${date}`,Math.abs(offset)<=1?60000:30*60000);
     });
   }
   const responses=await Promise.allSettled(requests);
@@ -52,5 +56,5 @@ export async function getEvents(rawQuery) {
   if(knownEvents.size>4000) for(const [id,event] of knownEvents) if(Date.parse(event.startTime)<Date.now()-86400000) knownEvents.delete(id);
   const events=selectEvents([...all.values()],query);
   const alternatives=query.kind==='matchup' && !events.length ? selectEvents([...all.values()],{teams:[query.teams[0]]}).slice(0,3) : [];
-  return {events,alternatives,query,complete:good.length===responses.length,updatedAt:Date.now(),provider:'ESPN',coverage:query.teams.length?'PUBLISHED SEASON':'NEXT 7 DAYS'};
+  return {events,alternatives,query,complete:good.length===responses.length,updatedAt:Date.now(),provider:'ESPN',coverage:query.teams.length?'PUBLISHED SEASON':'LIVE WINDOW + NEXT 6 DAYS'};
 }

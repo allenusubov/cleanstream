@@ -29,9 +29,10 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
         for(const [i,source] of data.sources.entries()) {
           const button=element('button','source-choice');button.type='button';
           const left=element('span','source-copy');
-          left.append(element('span','source-name',`SOURCE ${String(i+1).padStart(2,'0')}`));
-          left.append(element('span','source-detail',`DIRECT${source.quality?` · ${source.quality}P`:''} · CHECKED`));
-          button.append(left,element('span','source-rank',source.label));
+          left.append(element('span','source-name',source.displayName||source.name||`SOURCE ${String(i+1).padStart(2,'0')}`));
+          if(source.quality)left.append(element('span','source-detail',`${source.quality}P`));
+          button.append(left);
+          if(source.recommended)button.append(element('span','source-rank','RECOMMENDED'));
           button.addEventListener('click',()=>onWatch(source,latest.get(event.id)||[],event));list.append(button);
         }
       };
@@ -49,16 +50,18 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
     info.append(element('h3','event-title',event.title));
     const date=new Date(event.startTime);
     const when=event.status==='live'?'LIVE':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(date).toUpperCase();
-    info.append(element('p','event-time',`${event.creator?event.creator.toUpperCase()+' · YOUTUBE · ':''}${when}`));
+    const platform=event.provider==='youtube'?'YOUTUBE.COM':event.provider==='twitch'?'TWITCH.TV':'';
+    const creator=event.creator && event.creator.toUpperCase()!==event.title.toUpperCase()?`${event.creator.toUpperCase()} · `:'';
+    info.append(element('p','event-time',`${creator}${platform?platform+' · ':''}${when}`));
     const right=element('div','event-actions');
     const state=element('span','event-state');state.setAttribute('aria-live','polite');
     const watch=element('button','text-action event-watch','WATCH');watch.type='button';watch.disabled=true;
     watch.addEventListener('click',()=>{const available=latest.get(event.id)||[];if(available[0])onWatch(available[0],available,event);});
     right.append(state,watch);heading.append(info,right);article.append(heading,element('div','source-list'));
     const eligible=event.status!=='finished' && date.getTime()<=Date.now()+45*60000 && date.getTime()>Date.now()-6*3600000;
-    if(event.provider==='youtube') {
+    if(['youtube','twitch'].includes(event.provider)) {
       latest.set(event.id,event.sources||[]);watch.disabled=!event.sources?.length;
-      state.textContent=event.sources?.length?'YOUTUBE':'UPCOMING';
+      state.textContent=event.sources?.length?(event.provider==='twitch'?'TWITCH.TV':'YOUTUBE.COM'):'UPCOMING';
     }
     else if(eligible && auto) sources(event,article,token);
     else if(eligible) {
@@ -87,7 +90,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
       const data=response?await response.json():cached.data;if(token!==generation)return;
       if(response)try{sessionStorage.setItem(`events:${q.toLowerCase()}`,JSON.stringify({time:Date.now(),data}));}catch{}
       status.remove();
-      const notices={YOUTUBE_NOT_CONFIGURED:'YOUTUBE SEARCH IS NOT CONNECTED YET. YOU CAN PASTE A YOUTUBE VIDEO LINK ON THE HOMEPAGE.',YOUTUBE_LIMIT:'YOUTUBE SEARCH LIMIT REACHED. TRY A DIRECT LINK.',YOUTUBE_UNAVAILABLE:'YOUTUBE SEARCH IS TEMPORARILY UNAVAILABLE.',CATALOG_UNAVAILABLE:'SPORTS LISTINGS ARE TEMPORARILY UNAVAILABLE.'};
+      const notices={YOUTUBE_NOT_CONFIGURED:'YOUTUBE SEARCH IS NOT CONNECTED YET. YOU CAN PASTE A YOUTUBE VIDEO LINK ON THE HOMEPAGE.',YOUTUBE_LIMIT:'YOUTUBE SEARCH LIMIT REACHED. TRY A DIRECT LINK.',YOUTUBE_UNAVAILABLE:'YOUTUBE SEARCH IS TEMPORARILY UNAVAILABLE.',TWITCH_NOT_CONFIGURED:'TWITCH SEARCH IS NOT CONNECTED YET. YOU CAN PASTE A TWITCH CHANNEL LINK ON THE HOMEPAGE.',TWITCH_UNAVAILABLE:'TWITCH SEARCH IS TEMPORARILY UNAVAILABLE.',CATALOG_UNAVAILABLE:'SPORTS LISTINGS ARE TEMPORARILY UNAVAILABLE.'};
       for(const notice of data.notices||[])if(notices[notice])results.append(element('p','results-subtext',notices[notice]));
       if(!data.complete && !data.notices?.length)results.append(element('p','results-message','PART OF THE SCHEDULE IS UNAVAILABLE. THESE ARE THE EVENTS WE COULD CONFIRM.'));
       if(!data.events.length){
@@ -102,7 +105,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
         more.remove();
         for(const item of data.events.slice(shown,shown+12)){
           const eligible=Date.parse(item.startTime)<=Date.now()+45*60000;
-          results.append(row(item,token,eligible && item.provider!=='youtube'));
+          results.append(row(item,token,eligible && !['youtube','twitch'].includes(item.provider)));
         }
         shown+=12;if(shown<data.events.length)results.append(more);
       };

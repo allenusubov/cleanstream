@@ -3,62 +3,87 @@
     "id": "streamed",
     "name": "STREAMED",
     "type": "streamed",
-    "leagues": ["*"],
-    "enabled": true
+    "leagues": [
+      "*"
+    ],
+    "enabled": true,
+    "displayHost": "streamed.pk"
   },
   {
     "id": "wildgames",
     "name": "WILDGAMES",
-    "leagues": ["*"],
+    "leagues": [
+      "*"
+    ],
     "indexUrls": [
       "https://wildgames.bz/"
     ],
-    "allowedHosts": ["wildgames.bz"],
-    "enabled": true
+    "allowedHosts": [
+      "wildgames.bz"
+    ],
+    "enabled": true,
+    "displayHost": "wildgames.bz"
   },
   {
     "id": "streamseast",
     "name": "STREAMSEAST",
-    "leagues": ["NBA"],
+    "leagues": [
+      "NBA"
+    ],
     "indexUrls": [
       "https://streamseast.eu/nba/",
       "https://streamseast.eu/"
     ],
-    "allowedHosts": ["streamseast.eu"],
+    "allowedHosts": [
+      "streamseast.eu"
+    ],
     "dynamic": true,
     "enabled": true,
-    "status": "User-confirmed working domain; discover event pages from the NBA/index pages"
+    "status": "User-confirmed working domain; discover event pages from the NBA/index pages",
+    "displayHost": "streamseast.eu"
   },
   {
     "id": "tvsportslive",
     "name": "TVSPORTSLIVE",
-    "leagues": ["*"],
+    "leagues": [
+      "*"
+    ],
     "indexUrls": [
       "https://tvsportslive.fr/"
     ],
     "searchUrls": [
       "https://tvsportslive.fr/?s={query}"
     ],
-    "allowedHosts": ["tvsportslive.fr"],
+    "allowedHosts": [
+      "tvsportslive.fr"
+    ],
     "dynamic": true,
     "enabled": true,
-    "status": "User-confirmed event page works; use browser fallback when ordinary index fetch is blocked"
+    "status": "User-confirmed event page works; use browser fallback when ordinary index fetch is blocked",
+    "displayHost": "tvsportslive.fr"
   },
   {
     "id": "ihdstreams",
     "name": "IHDSTREAMS",
-    "leagues": ["*"],
+    "leagues": [
+      "*"
+    ],
     "indexUrls": [
       "https://ihdstreams.top/"
     ],
-    "allowedHosts": ["ihdstreams.top"],
+    "allowedHosts": [
+      "ihdstreams.top"
+    ],
     "enabled": false,
-    "status": "Needs a reachable current event index before enabling"
+    "status": "Needs a reachable current event index before enabling",
+    "displayHost": "ihdstreams.top"
   },
   {
     "id": "streameast",
     "name": "STREAMEAST",
-    "leagues": ["*"],
+    "leagues": [
+      "*"
+    ],
     "indexUrls": [
       "https://streameastslive.com/"
     ],
@@ -66,6 +91,7 @@
     "enabled": false,
     "waitSelector": "#seMatches .row-link",
     "status": "Old domain; keep disabled unless manually re-confirmed",
-    "dynamic": true
+    "dynamic": true,
+    "displayHost": "streameastslive.com"
   }
 ]

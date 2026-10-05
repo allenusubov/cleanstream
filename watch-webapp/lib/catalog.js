@@ -56,7 +56,7 @@ export function mergeEvents(events) {
   const unique=new Map();
   for(const event of events) {
     const title=event.participants?.length===2?event.participants.map(p=>normalize(p.name)).sort().join('|'):normalize(event.title).replace(/\b(vs|v|versus)\b/g,' ').replace(/\s+/g,' ').trim();
-    const key=event.provider==='youtube'?event.id:`${title}|${Math.round(Date.parse(event.startTime)/1800000)}`;
+    const key=['youtube','twitch'].includes(event.provider)?event.id:`${title}|${Math.round(Date.parse(event.startTime)/1800000)}`;
     if(!unique.has(key))unique.set(key,event);
   }
   return [...unique.values()].sort((a,b)=>(a.status==='live'?-1:0)-(b.status==='live'?-1:0)||Date.parse(a.startTime)-Date.parse(b.startTime));

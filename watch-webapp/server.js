@@ -6,6 +6,7 @@ import {knownEvents} from './lib/schedules.js';
 import {searchEvents} from './lib/live-search.js';
 import {youtubeId} from './public/youtube-url.js';
 import {resolveYouTube} from './lib/youtube.js';
+import {twitchChannel,twitchCandidate} from './public/twitch-url.js';
 import {eventJob} from './lib/discovery.js';
 import {AppError} from './lib/network.js';
 const app=express();
@@ -44,6 +45,8 @@ app.post('/api/resolve',limit(8),async(req,res)=>{
   const url=String(req.body?.url||'').trim();
   const youtube=youtubeId(url);
   if(youtube)return res.json({sourceUrl:url,candidates:[await resolveYouTube(youtube)]});
+  const twitch=twitchChannel(url);
+  if(twitch)return res.json({sourceUrl:url,candidates:[twitchCandidate(twitch)]});
   if(req.body?.refresh) clearResolved(url,origin(req));
   res.setHeader('Cache-Control','no-store');
   res.json(await resolve(url,origin(req)));

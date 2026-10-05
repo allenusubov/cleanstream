@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {matchesParticipants} from '../public/events.js';
-import {withPage,visit,resolve} from './resolver.js';
+import {withPage,visit,resolve,validate} from './resolver.js';
 import {AppError,WorkPool,fetchLimited} from './network.js';
 import {streamedPages} from './catalog.js';
 import {directoryLinks} from './directory.js';
@@ -80,9 +80,20 @@ async function genericPages(site,event) {
   }
   return [...new Map(found.map(page=>[page.url,page])).values()].slice(0,6);
 }
-export function rank(sources) {
-  return [...sources].sort((a,b)=>b.score-a.score).map((s,i)=>({...s,label:i===0?'BEST':i===1?'GOOD':'BACKUP'}));
+function displayName(site,pageUrl='') {
+  let host=site.displayHost||'';
+  if(!host && site.type==='streamed')host='streamed.pk';
+  if(!host) {
+    const seed=site.indexUrls?.[0]||site.indexUrl||pageUrl;
+    try{host=new URL(seed).hostname;}catch{}
+  }
+  host=host.replace(/^www\./i,'');
+  return (host||site.name||'SOURCE').toUpperCase();
 }
+export function rank(sources) {
+  return [...sources].sort((a,b)=>b.score-a.score).map((s,i)=>({...s,recommended:i===0}));
+}
+
 export function watchable(event,now=Date.now()) {
   const start=Date.parse(event.startTime);
   return event.status!=='finished' && start<=now+45*60000 && start>now-6*3600000;
@@ -98,7 +109,7 @@ export function eventJob(event,origin) {
   job.start=()=>{
     if(job.started) return;job.started=true;
     job.promise=pool.run(async()=>{
-      const sites=registry.filter(s=>s.enabled && (s.type==='streamed'||event.participants?.length>=2) && (s.leagues.includes('*')||s.leagues.includes(event.league))).slice(0,5);
+      const sites=registry.filter(s=>s.enabled && (s.type==='streamed'||event.participants?.length>=2) && (s.leagues.includes('*')||s.leagues.includes(event.league))).slice(0,8);
       let matched=0, unavailable=0;
       await Promise.allSettled(sites.map(async site=>{
         const statsKey=`${site.id}|${event.league}`;
@@ -110,16 +121,35 @@ export function eventJob(event,origin) {
           await Promise.allSettled(unique.map(async page=>{
             stats.attempts++;
             try {
-              const result=await resolve(page.url,origin,{progress:true});
+              // Fast pass: prove direct playback and one real media segment first.
+              // Do not make the user wait a full HLS target-duration cycle before the
+              // source appears in search results.
+              const result=await resolve(page.url,origin,{progress:false});
               // Multiple variants from one page are one source, not independent backups.
               const media=result.candidates.filter(m=>m.live).sort((a,b)=>a.startupMs-b.startupMs)[0];
               if(!media)throw new AppError('SOURCE_NOT_LIVE',422);
               stats.success++;stats.totalMs+=media.startupMs;
               const reliability=stats.success/stats.attempts;
               const score=100+reliability*20-Math.min(media.startupMs/1000,25)+Math.min(media.quality/1080,1)*5;
-              if(!job.sources.some(s=>s.mediaUrl===media.mediaUrl)) job.sources.push({...media,
-                id:idFor(`${event.id}|${page.url}`),siteId:site.id,name:site.name,score,eventId:event.id});
+              const source={...media,id:idFor(`${event.id}|${page.url}`),siteId:site.id,name:site.name,
+                displayName:displayName(site,page.url),score,eventId:event.id,deepVerified:!media.isHls};
+              if(!job.sources.some(s=>s.mediaUrl===media.mediaUrl))job.sources.push(source);
               job.publish();
+
+              // Deep live-progression verification continues after publication. It uses
+              // bounded manifest/segment requests only; no full-stream proxying.
+              if(media.isHls && media.live) {
+                try {
+                  const deep=await validate({url:media.mediaUrl,isHls:true},origin,{progress:true});
+                  Object.assign(source,{segmentDuration:deep.segmentDuration,quality:deep.quality||source.quality,
+                    deepVerified:true,verifiedAt:deep.verifiedAt,expiresAt:deep.expiresAt});
+                  source.score+=4;job.publish();
+                } catch {
+                  const index=job.sources.indexOf(source);
+                  if(index>=0)job.sources.splice(index,1);
+                  job.publish();
+                }
+              }
             } catch { /* A rejected candidate remains unavailable. */ }
           }));
         } catch {unavailable++;}

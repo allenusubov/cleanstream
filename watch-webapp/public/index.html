@@ -8,7 +8,7 @@
   <title>Clean Stream</title>
   <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
   <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
-  <link rel="stylesheet" href="/styles.css?v=0.5.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.6.0" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -35,9 +35,11 @@
     </section>
 
     <section class="player view" data-view="player" aria-hidden="true">
-      <a class="player-brand home-link" href="/">CLEAN STREAM</a>
       <header class="player-header">
-        <button class="text-action" id="back-button" type="button">BACK</button>
+        <div class="player-home-group">
+          <button class="text-action player-back" id="back-button" type="button" aria-label="Back">&lt;</button>
+          <a class="player-brand home-link" href="/">CLEAN STREAM</a>
+        </div>
         <button class="text-action" id="refresh-button" type="button" disabled>REFRESH</button>
         <a
           class="text-action"
@@ -57,6 +59,7 @@
           x-webkit-airplay="allow"
         ></video>
         <div id="youtube-player" hidden></div>
+        <div id="twitch-player" hidden></div>
 
         <div class="player-empty" id="player-empty">
           <div class="empty-copy" id="empty-copy">LOADING</div>
@@ -78,7 +81,7 @@
   </main>
 
   <script>window.__onGCastApiAvailable = value => { window.__castReady = value; };</script>
-  <script type="module" src="/app.js?v=0.5.0"></script>
+  <script type="module" src="/app.js?v=0.6.0"></script>
   <script async src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
 </html>

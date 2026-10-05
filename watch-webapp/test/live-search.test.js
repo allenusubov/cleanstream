@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MetadataCache} from '../lib/provider-cache.js';
 import {normalizeYouTube,youtubeSearch} from '../lib/youtube.js';
+import {normalizeTwitch,twitchSearch} from '../lib/twitch.js';
+import {twitchChannel} from '../public/twitch-url.js';
 import {youtubeId} from '../public/youtube-url.js';
 import {livePosition} from '../public/live-position.js';
 import {normalizeMatch,matchQuery,mergeEvents} from '../lib/catalog.js';
@@ -60,4 +62,18 @@ test('shinya resolves by channel, verifies live metadata, and reuses search quot
 test('directory extraction reads titles and rejects script-generated and off-site links',()=>{
   const links=directoryLinks('<script>"<a href="/fake">fake</a>"</script><a href="/game?a=1&amp;b=2"><strong>Knicks</strong> vs Celtics</a><a href="https://other.example/ad">Other</a>','https://sports.example/',['sports.example']);
   assert.deepEqual(links,[{url:'https://sports.example/game?a=1&b=2',text:'Knicks vs Celtics'}]);
+});
+
+test('Twitch links and live search results normalize to official twitch.tv sources',()=>{
+  assert.equal(twitchChannel('https://www.twitch.tv/kaicenat'),'kaicenat');
+  assert.equal(twitchChannel('https://twitch.tv/directory'),null);
+  assert.equal(twitchChannel('https://twitch.tv.evil.test/kaicenat'),null);
+  const event=normalizeTwitch({id:'1',is_live:true,broadcaster_login:'kaicenat',display_name:'KaiCenat',title:'LIVE',game_name:'Just Chatting',started_at:new Date().toISOString()});
+  assert.equal(event.provider,'twitch');assert.equal(event.sources[0].displayName,'TWITCH.TV');
+});
+test('missing Twitch credentials are explicit instead of pretending there are no results',async()=>{
+  const oldId=process.env.TWITCH_CLIENT_ID,oldSecret=process.env.TWITCH_CLIENT_SECRET;
+  delete process.env.TWITCH_CLIENT_ID;delete process.env.TWITCH_CLIENT_SECRET;
+  try{assert.equal((await twitchSearch('kai cenat')).notice,'TWITCH_NOT_CONFIGURED');}
+  finally{if(oldId)process.env.TWITCH_CLIENT_ID=oldId;if(oldSecret)process.env.TWITCH_CLIENT_SECRET=oldSecret;}
 });

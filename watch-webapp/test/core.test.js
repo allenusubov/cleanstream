@@ -61,7 +61,7 @@ test('playlist state and event timing do not confuse VOD with live events',()=>{
   assert.equal(p.duration,8);assert.equal(p.sequence,23);assert.equal(p.live,true);assert.equal(p.segments[0],'https://example.com/live/a.ts');
   const future={id:'nba-future',status:'scheduled',startTime:new Date(Date.now()+86400000).toISOString()};
   assert.equal(watchable(future),false);assert.throws(()=>eventJob(future,'https://example.com'),/NOT_STARTED/);
-  assert.equal(rank([{score:5},{score:10}])[0].label,'BEST');
+  const ranked=rank([{score:5},{score:10}]);assert.equal(ranked[0].recommended,true);assert.equal(ranked[1].recommended,false);
 });
 test('normalized schedules carry participants and real status',()=>{
   const event=normalizeEvent({id:'123',date:'2026-10-04T23:00Z',competitions:[{status:{type:{state:'in'}},competitors:[{team:{id:'18',displayName:'New York Knicks'}},{team:{id:'2',displayName:'Boston Celtics'}}]}]});
