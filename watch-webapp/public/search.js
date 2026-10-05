@@ -9,9 +9,12 @@ const labels={
 const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined&&text!==null)node.textContent=text;return node;};
 const countLabel=count=>`${count} SOURCE${count===1?'':'S'} FOUND`;
 const playableSource=source=>Boolean(source && (source.mediaUrl || ['youtube','twitch'].includes(source.provider)) && !source.unavailable);
+const SOURCE_CACHE_PREFIX='cleanstream.eventSources.v1.';
+function readSourceCache(eventId){try{const value=JSON.parse(sessionStorage.getItem(`${SOURCE_CACHE_PREFIX}${eventId}`)||'null');if(value&&Date.now()-value.time<10*60*1000)return value;}catch{}return null;}
+function writeSourceCache(eventId,sources,meta={}){try{sessionStorage.setItem(`${SOURCE_CACHE_PREFIX}${eventId}`,JSON.stringify({time:Date.now(),sources:sources.filter(playableSource),...meta}));}catch{}}
 
 function liveBadge(){
-  const badge=element('span','inline-live');badge.append(element('span','live-dot'),element('span','live-label','LIVE'));return badge;
+  const badge=element('span','inline-live');badge.append(element('span','live-separator','·'),document.createTextNode(' '),element('span','live-label','LIVE'));return badge;
 }
 
 export function initSearch(onWatch,onNavigate=()=>{}) {
@@ -36,24 +39,24 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
   function renderSources(event,row,sources){
     const list=row.querySelector('.source-list');if(!list)return;
     list.replaceChildren();
-    for(const [i,source] of sources.entries()) {
-      const ready=playableSource(source);
-      const button=element('button',`source-choice${ready?'':' is-pending'}`);button.type='button';button.disabled=!ready;
+    const readySources=(sources||[]).filter(playableSource);
+    for(const [i,source] of readySources.entries()) {
+      const ready=true;
+      const button=element('button','source-choice');button.type='button';button.disabled=false;
       const left=element('span','source-copy');
       left.append(element('span','source-name',source.displayName||source.name||`SOURCE ${String(i+1).padStart(2,'0')}`));
       if(source.quality)left.append(element('span','source-detail',`${source.quality}P`));
       else if(source.mirrorLabel && source.mirrorLabel!=='DEFAULT')left.append(element('span','source-detail',source.mirrorLabel));
       button.append(left);
       if(ready && source.recommended)button.append(element('span','source-rank','RECOMMENDED'));
-      else if(!ready)button.append(element('span','source-rank','CHECKING'));
-      if(ready)button.addEventListener('click',()=>onWatch(source,latest.get(event.id)||[],event));
+      button.addEventListener('click',()=>onWatch(source,latest.get(event.id)||[],event));
       list.append(button);
     }
   }
 
   function updateAction(event,row,{done=false,status='CHECKING'}={}){
     const state=row.querySelector('.event-state'),action=row.querySelector('.event-action');
-    const sources=latest.get(event.id)||[];
+    const sources=(latest.get(event.id)||[]).filter(playableSource);
     const playable=bestPlayable(event.id);
     if(state){
       if(sources.length)state.textContent=countLabel(sources.length);
@@ -83,8 +86,11 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
         const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
         const update=data=>{
           if(token!==generation || data.type!=='update') return;
-          latest.set(event.id,data.sources||[]);
-          if(row.classList.contains('is-expanded'))renderSources(event,row,data.sources||[]);
+          const visible=(data.sources||[]).filter(playableSource);
+          latest.set(event.id,visible);
+          writeSourceCache(event.id,visible,{done:Boolean(data.done),status:data.status||'CHECKING'});
+          window.dispatchEvent(new CustomEvent('cleanstream:sources-updated',{detail:{eventId:event.id,sources:visible}}));
+          if(row.classList.contains('is-expanded'))renderSources(event,row,visible);
           state.done=Boolean(data.done);state.running=!data.done;
           updateAction(event,row,{done:data.done,status:data.status});
         };
@@ -118,6 +124,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
   }
 
   function row(event,token,{auto=false,expanded=false}={}) {
+    if(!latest.has(event.id)){const cached=readSourceCache(event.id);if(cached?.sources?.length)latest.set(event.id,cached.sources.filter(playableSource));}
     const article=element('article','event-row');article.dataset.category=eventCategory(event)||'OTHER';article.dataset.eventId=event.id;
     const heading=element('div','event-heading'),info=element('div','event-info');
     const title=element('h3','event-title'),titleButton=element('button','event-title-button',event.title);
@@ -132,7 +139,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
     const expandAndCheck=()=>{
       const open=!article.classList.contains('is-expanded');
       article.classList.toggle('is-expanded',open);titleButton.setAttribute('aria-expanded',String(open));list.hidden=!open;
-      if(open){renderSources(event,article,latest.get(event.id)||[]);if(!['youtube','twitch'].includes(event.provider))sources(event,article,token,{mode:'deep'});}
+      if(open){renderSources(event,article,latest.get(event.id)||[]);if(!bestPlayable(event.id)&&!['youtube','twitch'].includes(event.provider))sources(event,article,token,{mode:'deep'});}
     };
     titleButton.addEventListener('click',expandAndCheck);
 
@@ -148,7 +155,8 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
       updateAction(event,article,{done:true,status:event.sources?.length?'READY':'NO_WORKING_SOURCES'});
     } else {
       updateAction(event,article);
-      if(auto){article.classList.add('is-expanded');titleButton.setAttribute('aria-expanded','true');list.hidden=false;sources(event,article,token,{mode:'deep'});}
+      if(expanded)renderSources(event,article,latest.get(event.id)||[]);
+      if(auto){article.classList.add('is-expanded');titleButton.setAttribute('aria-expanded','true');list.hidden=false;if(!bestPlayable(event.id))sources(event,article,token,{mode:'deep'});}
     }
     return article;
   }

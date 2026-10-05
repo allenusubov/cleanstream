@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {normalize,matchesParticipants} from '../public/events.js';
-import {withPage,visit,resolve,validate} from './resolver.js';
+import {withPage,visit,resolve,validate,quickValidate} from './resolver.js';
 import {AppError,WorkPool,fetchLimited} from './network.js';
 import {streamedPages} from './catalog.js';
 import {directoryLinks} from './directory.js';
@@ -281,7 +281,8 @@ async function fastCandidates(target,origin) {
   // Surface discovered direct media immediately; actual device playback is the
   // final compatibility test.
   const result=await resolve(target.url,origin,{progress:false});
-  return result.candidates.map(candidate=>({...candidate,sourceUrl:target.parentUrl||target.url}));
+  const checks=await Promise.allSettled(result.candidates.slice(0,8).map(candidate=>quickValidate(candidate)));
+  return checks.filter(item=>item.status==='fulfilled').map(item=>({...item.value,sourceUrl:target.parentUrl||target.url}));
 }
 function siteStats(site,event){
   const key=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
@@ -347,7 +348,7 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
         const mirrorKey=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
         const resolveTarget=async target=>{
           const pending=pendingSource(site,target,event,25+sitePriority(site,event));
-          upsert(pending);stats.attempts++;
+          stats.attempts++;
           try{
             const candidates=(await fastCandidates(target,origin)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
             if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
@@ -372,7 +373,7 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
             if(target.text) {
               const remembered=mirrorHistory.get(mirrorKey)||new Set();remembered.add(target.text);mirrorHistory.set(mirrorKey,remembered);
             }
-          }catch{remove(pending.id);}
+          }catch{/* Hidden candidate failed before it became watchable. */}
         };
         try{
           const pages=site.events?.[event.id]?[{url:site.events[event.id],text:event.title}]:site.type==='streamed'?await streamedPages(event):await genericPages(site,event,{light});

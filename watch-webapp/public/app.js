@@ -17,7 +17,8 @@ const favoritesInput=$('#favorites-input');
 const preferencesMessage=$('#preferences-message');
 const streamInput = $('#stream-url');
 const homeMessage = $('#home-message');
-const sourceLink = $('#source-link');
+const sourcesButton = $('#sources-button');
+const sourceMenu = $('#source-menu');
 const video = $('#video');
 const stage = $('.player-stage');
 const playerEmpty = $('#player-empty');
@@ -85,9 +86,8 @@ const friendly = {
 };
 const search = initSearch(async (item, items, event) => {
   currentEvent=event; alternatives=items; failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;
-  sourceUrl=item.sourceUrl;sourceLink.href=sourceUrl;streamInput.value=sourceUrl;
+  sourceUrl=item.sourceUrl;streamInput.value=sourceUrl;
   navigate({view:'player',url:sourceUrl,q:search.query,event:event.id,live:['youtube','twitch'].includes(item.provider)?item.live:undefined});
-  search.stop();
   showView('player');userPaused=false;
   const toTV=casting();
   await runOperation(async signal => {
@@ -101,12 +101,54 @@ const search = initSearch(async (item, items, event) => {
   leavePlayer();showView('home');navigate({view:'search',q});
 });
 
+function sourceKey(item){return item?.id||item?.mediaUrl||item?.sourceUrl||'';}
+function sourceLabel(item,index=0){
+  if(item?.displayName||item?.name)return String(item.displayName||item.name).toUpperCase();
+  const seed=item?.sourceUrl||item?.mediaUrl;
+  try{return new URL(seed).hostname.replace(/^www\./i,'').toUpperCase();}catch{}
+  return `SOURCE ${String(index+1).padStart(2,'0')}`;
+}
+function playerSources(){
+  const all=[candidate,...alternatives,...(currentEvent?search.getSources(currentEvent.id):[])].filter(Boolean);
+  const map=new Map();
+  for(const item of all){
+    if(!(item.mediaUrl||['youtube','twitch'].includes(item.provider)))continue;
+    const key=sourceKey(item);if(key&&!map.has(key))map.set(key,item);
+  }
+  return [...map.values()];
+}
+function closeSourceMenu(){sourceMenu.hidden=true;sourcesButton.setAttribute('aria-expanded','false');}
+function renderSourceMenu(){
+  const items=playerSources();sourceMenu.replaceChildren();
+  if(!items.length){const empty=document.createElement('div');empty.className='source-menu-empty';empty.textContent='NO SOURCES';sourceMenu.append(empty);}
+  for(const [index,item] of items.entries()){
+    const row=document.createElement('button');row.type='button';row.className='source-menu-row';row.setAttribute('role','menuitem');
+    const label=document.createElement('span');label.className='source-menu-name';label.textContent=sourceLabel(item,index);row.append(label);
+    const playing=sourceKey(item)===sourceKey(candidate);
+    if(playing){const state=document.createElement('span');state.className='source-menu-state';state.textContent='PLAYING';row.append(state);}
+    row.addEventListener('click',async()=>{
+      closeSourceMenu();if(playing||busy)return;userPaused=false;
+      await runOperation(async signal=>{await playItem(item,signal,Boolean(casting()));});
+    });
+    sourceMenu.append(row);
+  }
+  sourcesButton.disabled=!items.length;
+}
+
+sourcesButton.addEventListener('click',event=>{
+  event.stopPropagation();
+  if(sourceMenu.hidden){renderSourceMenu();sourceMenu.hidden=false;sourcesButton.setAttribute('aria-expanded','true');}
+  else closeSourceMenu();
+});
+document.addEventListener('pointerdown',event=>{if(!sourceMenu.hidden&&!sourceMenu.contains(event.target)&&event.target!==sourcesButton)closeSourceMenu();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closeSourceMenu();});
+window.addEventListener('cleanstream:sources-updated',event=>{if(currentEvent?.id===event.detail?.eventId&&!sourceMenu.hidden)renderSourceMenu();});
+
 function tickerEventButton(event){
   const button=document.createElement('button');button.type='button';button.className='ticker-event';
   const title=document.createElement('span');title.className='ticker-event-title';title.textContent=compactEventTitle(event);button.append(title);
   if(event.status==='live'){
-    button.append(document.createTextNode(' '));
-    const live=document.createElement('span');live.className='inline-live';const dot=document.createElement('span');dot.className='live-dot';const label=document.createElement('span');label.className='live-label';label.textContent='LIVE';live.append(dot,label);button.append(live);
+    const live=document.createElement('span');live.className='inline-live';const dot=document.createElement('span');dot.className='live-separator';dot.textContent='·';const label=document.createElement('span');label.className='live-label';label.textContent='LIVE';live.append(document.createTextNode(' '),dot,document.createTextNode(' '),label);button.append(live);
   }else{
     const when=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(event.startTime)).toUpperCase();button.append(document.createTextNode(` · ${when}`));
   }
@@ -261,7 +303,7 @@ exploreButton.addEventListener('click',async()=>{
   leavePlayer();showView('home');navigate({view:'explore'});search.explore(liveWindowEvents);
 });
 async function playItem(item,signal,toTV=false) {
-  sourceUrl=item.sourceUrl||sourceUrl;sourceLink.href=sourceUrl;
+  sourceUrl=item.sourceUrl||sourceUrl;
   if(['youtube','twitch'].includes(item.provider)) {
     // A video playing on a receiver must not overlap a new embedded player.
     if(casting())castContext.endCurrentSession(true);
@@ -278,6 +320,7 @@ async function playItem(item,signal,toTV=false) {
     route.searchParams.set('watch',sourceUrl);history.replaceState(history.state,'',route);
   }
   userPaused=false;
+  if(!sourceMenu.hidden)renderSourceMenu();
 }
 function readable(error) {
   if(friendly[error?.message])return friendly[error.message];
@@ -491,6 +534,7 @@ function syncControls() {
   liveButton.title = live ? (atLive ? 'At the latest available video' : 'Jump to live') : 'Live position unavailable';
   stage.classList.toggle('is-casting', onTV);
   if (onTV && !busy) placeholder('PLAYING ON TV');
+  sourcesButton.disabled=!playerSources().length;
   updateTVButton();
 }
 
@@ -647,7 +691,6 @@ async function openStream(push=true,restoreLive=null) {
   } catch { homeMessage.textContent = 'ENTER A VALID URL'; streamInput.focus(); return; }
   homeMessage.textContent = '';
   sourceUrl = url.href;
-  sourceLink.href = sourceUrl;
   showView('player');
   if(push)navigate({view:'player',url:sourceUrl});
   const toTV = casting();
@@ -683,7 +726,7 @@ function updateTVButton() {
   tvButton.hidden = !tvMode;
   tvButton.textContent = tvMode === 'airplay' ? 'AIRPLAY' : 'CAST';
   tvButton.classList.toggle('is-connected', casting() || Boolean(video.webkitCurrentPlaybackTargetIsWireless));
-  tvButton.disabled = busy || castLoading || !candidate || (tvMode === 'cast' && candidate.castEligible === false);
+  tvButton.disabled = busy || castLoading || !candidate;
   tvButton.title = tvMode === 'cast' ? 'Choose a Google Cast device' : 'Choose an AirPlay device';
 }
 function mediaMime(item) {
@@ -699,7 +742,7 @@ async function loadOnTV(item, signal) {
   castLoading = true;
   updateTVButton();
   try {
-    if(['youtube','twitch'].includes(item.provider)||item.castEligible === false) throw new Error('CAST_UNAVAILABLE');
+    if(['youtube','twitch'].includes(item.provider)) throw new Error('CAST_UNAVAILABLE');
     const live=Boolean(item.live);
     segmentDuration=item.segmentDuration || segmentDuration;
     if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -730,8 +773,7 @@ function adoptCastMedia() {
     candidate = {...media.customData, mediaUrl:url.href, isHls:Boolean(media.customData?.isHls), contentType:media.contentType};
     castOwned=true;remoteProgress=Date.now();userPaused=Boolean(remotePlayer?.isPaused);
     sourceUrl = media.customData?.sourceUrl || sourceUrl;
-    sourceLink.href = sourceUrl;
-    streamInput.value = sourceUrl;
+      streamInput.value = sourceUrl;
     segmentDuration = media.customData?.segmentDuration || 6;
     showView('player');
     navigate({view:'player',url:sourceUrl},true);
@@ -900,6 +942,7 @@ syncControls();
 if(window.__castReady || window.cast?.framework) window.__onGCastApiAvailable(true);
 
 function leavePlayer() {
+  closeSourceMenu();
   operation?.abort();operation=null;userPaused=true;recovering=false;
   destroyLocal();candidate=null;currentEvent=null;alternatives=[];sourceUrl='';setBusy(false);say();
 }

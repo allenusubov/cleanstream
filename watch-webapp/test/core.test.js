@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseQuery,selectEvents,matchesParticipants} from '../public/events.js';
 import {privateAddress,safeURL,fetchLimited,WorkPool} from '../lib/network.js';
-import {parsePlaylist,validate,resolve,provisionalCandidate} from '../lib/resolver.js';
+import {parsePlaylist,validate,resolve,provisionalCandidate,quickValidate} from '../lib/resolver.js';
 import {normalizeEvent} from '../lib/schedules.js';
 import {watchable,rank,eventJob,linkMatchesEvent,linkMatchesCategory,siteSupportsEvent} from '../lib/discovery.js';
 test('team, abbreviation, typo and matchup queries remain distinct',()=>{
@@ -218,6 +218,16 @@ test('stored custom profiles discard obvious event pages while preserving reusab
   data.set('cleanstream.customSources.v1',JSON.stringify([{url:'https://sports.example/',enabled:true,categories:{NFL:['https://sports.example/nfl-streams','https://sports.example/New-Orleans-Saints-vs-Atlanta-Falcons/69152']},eventLists:[]}]))
   const item=loadCustomSources(storage)[0];
   assert.deepEqual(item.categories.NFL,['https://sports.example/nfl-streams']);
+});
+
+
+
+test('quick validation confirms a playable HLS candidate without requiring browser CORS headers',async()=>{
+  const old=global.fetch;
+  const manifest='#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:6,\nsegment.ts';
+  global.fetch=async url=>url.endsWith('.m3u8')?new Response(manifest):new Response(new Uint8Array(188),{headers:{'content-type':'video/mp2t'}});
+  try{const item=await quickValidate({mediaUrl:'https://8.8.8.8/live.m3u8',isHls:true});assert.equal(item.mediaUrl,'https://8.8.8.8/live.m3u8');assert.equal(item.live,true);assert.equal(item.provisional,false);}
+  finally{global.fetch=old;}
 });
 
 test('resolver can surface an https media candidate before server-side CORS validation',async()=>{

@@ -163,6 +163,33 @@ export async function validate(item,origin,{progress=false,depth=0}={}) {
     segmentDuration:playlist.duration,castEligible,quality,startupMs:Date.now()-start,
     verifiedAt:Date.now(),expiresAt:Date.now()+90000};
 }
+
+export async function quickValidate(item,{depth=0}={}) {
+  if(depth>2) throw new AppError('NO_MEDIA',422);
+  const start=Date.now();
+  let url=item.mediaUrl||item.url;
+  if(!url || new URL(url).protocol!=='https:') throw new AppError('DIRECT_BLOCKED',422);
+  if(!(item.isHls||HLS.test(url))){
+    const response=await fetchLimited(url,{headers:{Range:'bytes=0-4095'},limit:4096,partial:true});
+    const type=response.headers.get('content-type')||'';
+    if(response.body.length<64 || /text\/html|application\/json/i.test(type)) throw new AppError('NO_MEDIA',422);
+    return {...item,mediaUrl:response.url,isHls:false,live:false,castEligible:true,provisional:false,startupMs:Date.now()-start,verifiedAt:Date.now(),expiresAt:Date.now()+90000};
+  }
+  let playlist=null,quality=item.quality||0,original=url;
+  for(let level=0;level<3;level++){
+    const response=await fetchLimited(url,{limit:384000});
+    playlist=parsePlaylist(response.body.toString(),response.url);
+    if(!playlist.variants.length){url=response.url;break;}
+    const sorted=playlist.variants.sort((a,b)=>Math.abs((a.height||720)-720)-Math.abs((b.height||720)-720));
+    quality=sorted[0].height||quality;url=sorted[0].url;playlist=null;
+  }
+  if(!playlist?.segments.length) throw new AppError('NO_MEDIA',422);
+  const segment=playlist.segments.at(-1);
+  const response=await fetchLimited(segment,{headers:{Range:'bytes=0-4095'},limit:4096,partial:true});
+  if(!response.body.length || /text\/html|application\/json/i.test(response.headers.get('content-type')||'')) throw new AppError('NO_MEDIA',422);
+  return {...item,mediaUrl:original,isHls:true,live:playlist.live,segmentDuration:playlist.duration,quality,castEligible:true,provisional:false,startupMs:Date.now()-start,verifiedAt:Date.now(),expiresAt:Date.now()+90000};
+}
+
 export function provisionalCandidate(item,sourceUrl=''){
   const mediaUrl=item?.url||item?.mediaUrl;
   if(!mediaUrl)return null;
