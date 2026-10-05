@@ -64,7 +64,7 @@ let remotePosition=-1;
 let recoveryCycles=0;
 let liveWindowEvents=[];
 let liveWindowUpdated=0;
-let tickerFrame=0,tickerLast=0,tickerPauseUntil=0,tickerSetWidth=0,tickerNormalizing=false,tickerAutoScrolling=false,tickerAutoScrollAt=0,tickerHovered=false;
+let tickerTimer=0,tickerPauseUntil=0,tickerSetWidth=0,tickerNormalizing=false,tickerAutoScrolling=false,tickerAutoScrollAt=0,tickerHovered=false,tickerAnimating=false,tickerAnimationFrame=0,tickerEventCount=0;
 let currentSettingsSection='menu';
 const youtube=new YouTubePlayer($('#youtube-player'),()=>syncControls(),error=>say(readable(error)));
 const twitch=new TwitchPlayer($('#twitch-player'),()=>syncControls(),error=>say(readable(error)));
@@ -114,33 +114,82 @@ function tickerEventButton(event){
   });
   return button;
 }
-function pauseTicker(ms=3500){tickerPauseUntil=Math.max(tickerPauseUntil,performance.now()+ms);}
+const TICKER_STEP_MS=1000;
+const TICKER_SLIDE_MS=180;
+function scheduleTicker(delay=TICKER_STEP_MS){
+  clearTimeout(tickerTimer);
+  tickerTimer=setTimeout(stepTicker,Math.max(40,delay));
+}
+function pauseTicker(ms=3500){
+  tickerPauseUntil=Math.max(tickerPauseUntil,performance.now()+ms);
+  scheduleTicker(Math.max(60,tickerPauseUntil-performance.now()));
+}
+function markTickerProgrammaticScroll(){
+  tickerAutoScrolling=true;tickerAutoScrollAt=performance.now();
+  requestAnimationFrame(()=>{tickerAutoScrolling=false;});
+}
 function normalizeTickerPosition(){
   if(!tickerSetWidth||tickerNormalizing)return;
   tickerNormalizing=true;
-  if(liveTicker.scrollLeft<tickerSetWidth*.45)liveTicker.scrollLeft+=tickerSetWidth;
-  else if(liveTicker.scrollLeft>tickerSetWidth*1.55)liveTicker.scrollLeft-=tickerSetWidth;
+  if(liveTicker.scrollLeft<tickerSetWidth*.45){markTickerProgrammaticScroll();liveTicker.scrollLeft+=tickerSetWidth;}
+  else if(liveTicker.scrollLeft>tickerSetWidth*1.55){markTickerProgrammaticScroll();liveTicker.scrollLeft-=tickerSetWidth;}
   tickerNormalizing=false;
 }
-function tickerLoop(now){
-  if(!tickerLast)tickerLast=now;
-  const dt=Math.min(50,now-tickerLast);tickerLast=now;
-  if(tickerSetWidth&&!tickerHovered&&now>tickerPauseUntil&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
-    tickerAutoScrolling=true;tickerAutoScrollAt=performance.now();liveTicker.scrollLeft+=dt*.035;normalizeTickerPosition();tickerAutoScrolling=false;
+function tickerSets(){return [...tickerTrack.querySelectorAll('.ticker-set')];}
+function animateTickerTo(target,duration=TICKER_SLIDE_MS){
+  cancelAnimationFrame(tickerAnimationFrame);
+  const start=liveTicker.scrollLeft,distance=target-start;
+  if(Math.abs(distance)<1){liveTicker.scrollLeft=target;return Promise.resolve();}
+  tickerAnimating=true;
+  return new Promise(resolve=>{
+    const started=performance.now();
+    const frame=now=>{
+      const t=Math.min(1,(now-started)/duration);
+      const eased=1-Math.pow(1-t,3);
+      markTickerProgrammaticScroll();
+      liveTicker.scrollLeft=start+distance*eased;
+      if(t<1){tickerAnimationFrame=requestAnimationFrame(frame);return;}
+      liveTicker.scrollLeft=target;tickerAnimating=false;resolve();
+    };
+    tickerAnimationFrame=requestAnimationFrame(frame);
+  });
+}
+async function stepTicker(){
+  const now=performance.now();
+  if(!tickerSetWidth||tickerEventCount<2||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  if(tickerHovered){scheduleTicker(120);return;}
+  if(tickerAnimating){scheduleTicker(60);return;}
+  if(now<tickerPauseUntil){scheduleTicker(tickerPauseUntil-now);return;}
+  normalizeTickerPosition();
+  const sets=tickerSets(),middle=sets[1],third=sets[2];
+  const middleButtons=[...(middle?.querySelectorAll('.ticker-event')||[])];
+  const thirdButtons=[...(third?.querySelectorAll('.ticker-event')||[])];
+  if(!middleButtons.length||!thirdButtons.length){scheduleTicker();return;}
+  const left=liveTicker.scrollLeft;
+  let target=middleButtons.find(button=>button.offsetLeft>left+4);
+  let wrap=false;
+  if(!target){target=thirdButtons[0];wrap=true;}
+  await animateTickerTo(target.offsetLeft,TICKER_SLIDE_MS);
+  if(wrap){
+    markTickerProgrammaticScroll();
+    liveTicker.scrollLeft=middleButtons[0].offsetLeft;
   }
-  tickerFrame=requestAnimationFrame(tickerLoop);
+  scheduleTicker(Math.max(40,TICKER_STEP_MS-TICKER_SLIDE_MS));
 }
 function startTickerMotion(){
-  cancelAnimationFrame(tickerFrame);tickerLast=0;
+  clearTimeout(tickerTimer);cancelAnimationFrame(tickerAnimationFrame);tickerAnimating=false;
   requestAnimationFrame(()=>{
-    const first=tickerTrack.querySelector('.ticker-set');tickerSetWidth=first?.getBoundingClientRect().width||0;
-    if(tickerSetWidth){liveTicker.scrollLeft=tickerSetWidth;normalizeTickerPosition();}
-    tickerFrame=requestAnimationFrame(tickerLoop);
+    const sets=tickerSets(),first=sets[0],middle=sets[1];
+    tickerSetWidth=first?.getBoundingClientRect().width||0;
+    const firstMiddle=middle?.querySelector('.ticker-event');
+    if(tickerSetWidth&&firstMiddle){markTickerProgrammaticScroll();liveTicker.scrollLeft=firstMiddle.offsetLeft;}
+    if(tickerEventCount>1&&!matchMedia('(prefers-reduced-motion: reduce)').matches)scheduleTicker(TICKER_STEP_MS);
   });
 }
 function renderTicker(events){
   const prefs=loadEventPreferences();liveWindowEvents=Array.isArray(events)?events:[];
-  const visible=tickerEvents(liveWindowEvents,prefs);tickerTrack.replaceChildren();tickerSetWidth=0;
+  clearTimeout(tickerTimer);cancelAnimationFrame(tickerAnimationFrame);tickerAnimating=false;
+  const visible=tickerEvents(liveWindowEvents,prefs);tickerTrack.replaceChildren();tickerSetWidth=0;tickerEventCount=visible.length;
   if(!visible.length){const empty=document.createElement('span');empty.className='ticker-empty';empty.textContent='NO LIVE / UPCOMING EVENTS';tickerTrack.append(empty);return;}
   const makeSet=()=>{const set=document.createElement('div');set.className='ticker-set';for(const event of visible)set.append(tickerEventButton(event));return set;};
   tickerTrack.append(makeSet(),makeSet(),makeSet());startTickerMotion();
@@ -164,7 +213,7 @@ liveTicker.addEventListener('mouseenter',()=>{tickerHovered=true;pauseTicker(120
 liveTicker.addEventListener('mouseleave',()=>{tickerHovered=false;pauseTicker(600);});
 liveTicker.addEventListener('pointerdown',()=>pauseTicker(4500));
 liveTicker.addEventListener('touchstart',()=>pauseTicker(4500),{passive:true});
-liveTicker.addEventListener('scroll',()=>{if(!tickerAutoScrolling&&performance.now()-tickerAutoScrollAt>100)pauseTicker(2200);normalizeTickerPosition();},{passive:true});
+liveTicker.addEventListener('scroll',()=>{const manual=!tickerAnimating&&!tickerAutoScrolling&&performance.now()-tickerAutoScrollAt>120;if(manual){pauseTicker(2200);normalizeTickerPosition();}},{passive:true});
 liveTicker.addEventListener('wheel',event=>{
   if(Math.abs(event.deltaY)>Math.abs(event.deltaX)){event.preventDefault();liveTicker.scrollLeft+=event.deltaY;}
   pauseTicker(3500);normalizeTickerPosition();
