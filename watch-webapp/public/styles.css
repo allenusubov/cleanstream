@@ -263,6 +263,47 @@ a { text-decoration: none; }
   .text-action { transition: none; }
 }
 
+
+/* Live / next-24-hours ticker */
+.ticker-row {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:baseline;
+  gap:clamp(22px,4vw,64px);
+  margin:0 0 clamp(30px,5vh,60px);
+  font-size:clamp(18px,2.5vw,38px);
+  font-weight:700;
+  line-height:1.05;
+  letter-spacing:-.045em;
+}
+.ticker-field {min-width:0;border-bottom:1px solid #555;padding:0 0 5px;overflow:hidden;}
+.live-ticker {width:100%;overflow:hidden;white-space:nowrap;}
+.ticker-track {display:flex;width:max-content;will-change:transform;}
+.ticker-track.is-moving {animation:ticker-sweep var(--ticker-duration,34s) linear infinite;}
+.live-ticker:hover .ticker-track,.live-ticker:focus-within .ticker-track {animation-play-state:paused;}
+.ticker-set {display:flex;align-items:baseline;gap:1.7em;padding-right:1.7em;flex:none;}
+.ticker-event {
+  flex:none;
+  color:#707070;
+  cursor:pointer;
+  font:inherit;
+  letter-spacing:inherit;
+  line-height:inherit;
+  text-transform:uppercase;
+  white-space:nowrap;
+  transition:color 100ms ease;
+}
+.ticker-event:hover,.ticker-event:focus-visible {color:var(--fg);outline:none;}
+.ticker-loading,.ticker-empty {color:#555;text-transform:uppercase;}
+#explore-button {font:inherit;letter-spacing:inherit;justify-self:end;}
+.has-results #live-ticker-row {display:none;}
+@keyframes ticker-sweep {from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track.is-moving {animation:none;}
+  .live-ticker {overflow-x:auto;scrollbar-width:none;}
+  .live-ticker::-webkit-scrollbar {display:none;}
+}
+
 /* Home and results share a single field system. */
 .masthead {font-size:clamp(36px,12.1vw,220px);font-weight:800;line-height:.9;letter-spacing:-.065em;white-space:nowrap;}
 .masthead:focus-visible,.player-brand:focus-visible {outline:1px solid white;outline-offset:6px;}
@@ -310,7 +351,7 @@ a { text-decoration: none; }
 #youtube-player iframe,#twitch-player iframe {display:block;border:0;width:100%;height:100%;min-height:200px;}
 @media(max-width:720px){
  .home-spacer {min-height:20vh;}
- .search-row {gap:18px;margin-bottom:38px;font-size:clamp(17px,4.65vw,24px);}
+ .search-row,.ticker-row {gap:18px;margin-bottom:38px;font-size:clamp(17px,4.65vw,24px);}
  .event-heading {align-items:flex-start;gap:14px;}
  .event-actions {flex-direction:column;align-items:flex-end;gap:12px;max-width:115px;}
  .event-state {font-size:11px;text-align:right;}
@@ -337,9 +378,7 @@ a { text-decoration: none; }
   margin:0;
 }
 .settings-trigger svg {display:block;width:100%;height:100%;}
-.settings-trigger-hole {fill:var(--bg);}
 .settings-trigger:hover,.settings-trigger:focus-visible {background:var(--fg);color:var(--bg);outline:none;}
-.settings-trigger:hover .settings-trigger-hole,.settings-trigger:focus-visible .settings-trigger-hole {fill:var(--fg);}
 .home.has-results .settings-trigger {display:none;}
 
 .settings {

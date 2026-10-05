@@ -78,6 +78,28 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
     } else state.textContent='SOURCES CHECKED NEAR START';
     return article;
   }
+  function beginCustomResults(title,q='') {
+    stop();const token=++generation;latest=new Map();lastQuery=q||title;results.hidden=false;results.replaceChildren();
+    document.querySelector('.home').classList.add('has-results');
+    results.append(element('h2','results-title',title));
+    return token;
+  }
+  function showEvent(event) {
+    if(!event)return;
+    input.value=event.title||'';
+    const token=beginCustomResults(`${String(event.title||'EVENT').toUpperCase()} EVENT:`,event.title||'');
+    results.append(row(event,token,true));
+  }
+  function explore(events=[]) {
+    input.value='';
+    const token=beginCustomResults('LIVE / NEXT 24 HOURS:','');
+    if(!events.length){results.append(element('p','results-message','NO LIVE OR UPCOMING EVENTS FOUND.'));return;}
+    for(const item of events.slice(0,60)){
+      const eligible=item.status==='live'||Date.parse(item.startTime)<=Date.now()+45*60000;
+      results.append(row(item,token,eligible&&!['youtube','twitch'].includes(item.provider)));
+    }
+  }
+
   async function search(value=input.value.trim(),navigate=true) {
     const q=String(value).trim();if(!q)return input.focus();input.value=q;
     if(navigate)onNavigate(q);
@@ -98,7 +120,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
       const data=response?await response.json():cached.data;if(token!==generation)return;
       if(response)try{sessionStorage.setItem(`events:${q.toLowerCase()}`,JSON.stringify({time:Date.now(),data}));}catch{}
       status.remove();
-      const notices={YOUTUBE_NOT_CONFIGURED:'YOUTUBE SEARCH IS NOT CONNECTED YET. YOU CAN PASTE A YOUTUBE VIDEO LINK ON THE HOMEPAGE.',YOUTUBE_LIMIT:'YOUTUBE SEARCH LIMIT REACHED. TRY A DIRECT LINK.',YOUTUBE_UNAVAILABLE:'YOUTUBE SEARCH IS TEMPORARILY UNAVAILABLE.',TWITCH_NOT_CONFIGURED:'TWITCH SEARCH IS NOT CONNECTED YET. YOU CAN PASTE A TWITCH CHANNEL LINK ON THE HOMEPAGE.',TWITCH_UNAVAILABLE:'TWITCH SEARCH IS TEMPORARILY UNAVAILABLE.',CATALOG_UNAVAILABLE:'SPORTS LISTINGS ARE TEMPORARILY UNAVAILABLE.'};
+      const notices={SCHEDULE_UNAVAILABLE:'PART OF THE ESPN SCHEDULE IS TEMPORARILY UNAVAILABLE.',YOUTUBE_NOT_CONFIGURED:'YOUTUBE SEARCH IS NOT CONNECTED YET. YOU CAN PASTE A YOUTUBE VIDEO LINK ON THE HOMEPAGE.',YOUTUBE_LIMIT:'YOUTUBE SEARCH LIMIT REACHED. TRY A DIRECT LINK.',YOUTUBE_UNAVAILABLE:'YOUTUBE SEARCH IS TEMPORARILY UNAVAILABLE.',TWITCH_NOT_CONFIGURED:'TWITCH SEARCH IS NOT CONNECTED YET. YOU CAN PASTE A TWITCH CHANNEL LINK ON THE HOMEPAGE.',TWITCH_UNAVAILABLE:'TWITCH SEARCH IS TEMPORARILY UNAVAILABLE.',CATALOG_UNAVAILABLE:'SPORTS LISTINGS ARE TEMPORARILY UNAVAILABLE.'};
       for(const notice of data.notices||[])if(notices[notice])results.append(element('p','results-subtext',notices[notice]));
       if(!data.complete && !data.notices?.length)results.append(element('p','results-message','PART OF THE SCHEDULE IS UNAVAILABLE. THESE ARE THE EVENTS WE COULD CONFIRM.'));
       if(!data.events.length){
@@ -121,7 +143,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
     }catch(error){if(token===generation && error.name!=='AbortError')status.textContent='SCHEDULE UNAVAILABLE. TRY AGAIN SHORTLY.';}
   }
   form.addEventListener('submit',event=>{event.preventDefault();search();});
-  return {stop,search,reset(){stop();results.hidden=true;results.replaceChildren();document.querySelector('.home').classList.remove('has-results');},get query(){return lastQuery;},getSources:eventId=>latest.get(eventId)||[],async refreshSources(eventId,onUpdate,signal){
+  return {stop,search,showEvent,explore,reset(){stop();results.hidden=true;results.replaceChildren();document.querySelector('.home').classList.remove('has-results');},get query(){return lastQuery;},getSources:eventId=>latest.get(eventId)||[],async refreshSources(eventId,onUpdate,signal){
     const response=await sourceRequest(eventId,signal);if(!response.ok)return [];
     const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',found=[];
     while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let end;

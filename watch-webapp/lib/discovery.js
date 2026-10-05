@@ -50,7 +50,7 @@ function categoryTerms(site,event) {
 export function linkMatchesCategory(link,site,event) {
   try {
     const url=new URL(link.url);
-    const text=normalize(`${link.text||''} ${decodeURIComponent(url.pathname)} ${decodeURIComponent(url.search)}`);
+    const text=normalize(`${link.text||''} ${decodeURIComponent(url.pathname)} ${decodeURIComponent(url.search)} ${decodeURIComponent(url.hash)}`);
     return categoryTerms(site,event).some(term=>` ${text} `.includes(` ${term} `));
   } catch { return false; }
 }
@@ -81,7 +81,11 @@ async function readIndex(site,indexUrl,event) {
     try {
       const response=await fetchLimited(indexUrl,{limit:2*1024*1024});
       staticLinks=directoryLinks(response.body.toString(),response.url,site.allowedHosts,site.custom?1500:600);
-      if(!site.dynamic || staticLinks.some(link=>linkMatchesEvent(link,event)||linkMatchesCategory(link,site,event))) {
+      const fragmentRoute=Boolean(new URL(indexUrl).hash);
+      // Hash routes (for example /#nfl) are client-side navigation. A normal HTTP
+      // fetch only sees the root document, so it cannot prove the selected
+      // category is loaded; dynamic sources must visit the fragment in-browser.
+      if(!site.dynamic || (!fragmentRoute && staticLinks.some(link=>linkMatchesEvent(link,event)||linkMatchesCategory(link,site,event)))) {
         indexes.set(cacheKey,{time:Date.now(),links:staticLinks});
         return staticLinks;
       }

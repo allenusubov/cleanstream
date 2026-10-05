@@ -10,7 +10,8 @@ test('team, abbreviation, typo and matchup queries remain distinct',()=>{
   assert.equal(parseQuery('KNICKS CELTICS').kind,'matchup');
   assert.equal(parseQuery('new orleans pelicans').teams.length,1);
   assert.equal(parseQuery('NBA').kind,'league');
-  assert.equal(parseQuery('UFC 325').kind,'unsupported');
+  assert.equal(parseQuery('UFC 325').kind,'sport');
+  assert.equal(parseQuery('NFL').league,'NFL');
   assert.equal(parseQuery('zzzz').kind,'unknown');
 });
 test('nonexistent matchups return no events, without confusing individual teams',()=>{
@@ -173,4 +174,22 @@ test('source TEST merges learned routes without overwriting manual routes',()=>{
   assert.deepEqual(item.categories.NFL,['https://example.com/nfl','https://catalog.example/nfl']);
   assert.equal(item.categories.NBA[0],'https://example.com/nba');
   assert.deepEqual(item.eventLists,['https://example.com/events','https://catalog.example/live']);
+});
+
+
+test('manual custom routes preserve query strings and hash fragments exactly',()=>{
+  const parsed=parseProfileLines('NFL /#nfl\nNBA /?sport=nba#live\nEVENTS #events','https://sports.example/');
+  assert.equal(parsed.categories.NFL[0],'https://sports.example/#nfl');
+  assert.equal(parsed.categories.NBA[0],'https://sports.example/?sport=nba#live');
+  assert.equal(parsed.eventLists[0],'https://sports.example/#events');
+  const data=new Map();const storage={getItem:key=>data.get(key)||null,setItem:(key,value)=>data.set(key,value)};
+  addCustomSource('sports.example',storage);
+  setCustomSourceProfile('https://sports.example/',parsed,storage);
+  assert.equal(enabledCustomSources(storage)[0].categories.NFL[0],'https://sports.example/#nfl');
+});
+
+test('source TEST discovery keeps same-page hash category routes',()=>{
+  const profile=profileFromLinks([{url:'https://sports.example/#nfl',text:'NFL'},{url:'https://sports.example/#nba',text:'NBA'}],'https://sports.example/');
+  assert.equal(profile.categories.NFL[0],'https://sports.example/#nfl');
+  assert.equal(profile.categories.NBA[0],'https://sports.example/#nba');
 });

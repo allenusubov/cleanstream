@@ -7,7 +7,7 @@ export function normalizeCustomSourceUrl(value) {
   let url;
   try{url=new URL(raw.includes('://')?raw:`https://${raw}`);}catch{throw new Error('ENTER A VALID SOURCE URL');}
   if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error('ENTER A VALID SOURCE URL');
-  url.hash='';if(!url.pathname)url.pathname='/';return url.href;
+  if(!url.pathname)url.pathname='/';return url.href;
 }
 export function customSourceDomain(value) {try{return new URL(value).hostname.replace(/^www\./i,'').toUpperCase();}catch{return 'SOURCE';}}
 function normalizeProfileUrl(value){return normalizeCustomSourceUrl(value);}
@@ -81,8 +81,18 @@ export function addCustomSources(value,storage=globalThis.localStorage) {
   return {items:saveCustomSources(items,storage),added,existing,invalid,limit};
 }
 export function profileLines(item){
-  const lines=[];for(const [key,urls] of Object.entries(item.categories||{}))for(const url of urls)lines.push(`${key} ${url}`);
-  for(const url of item.eventLists||[])lines.push(`EVENTS ${url}`);return lines.join('\n');
+  let base=null;try{base=new URL(item.url);}catch{}
+  const compact=value=>{
+    try{
+      const url=new URL(value);
+      if(base&&url.origin===base.origin)return `${url.pathname||'/'}${url.search}${url.hash}`||'/';
+      return url.href;
+    }catch{return value;}
+  };
+  const lines=[];
+  for(const [key,urls] of Object.entries(item.categories||{}))for(const url of urls)lines.push(`${key} ${compact(url)}`);
+  for(const url of item.eventLists||[])lines.push(`EVENTS ${compact(url)}`);
+  return lines.join('\n');
 }
 export function parseProfileLines(value,baseUrl=''){
   const categories={},eventLists=[];let invalid=0;
@@ -92,12 +102,15 @@ export function parseProfileLines(value,baseUrl=''){
     let [,label,target]=match;label=label.toUpperCase();
     let url;
     try{
-      if(/^\//.test(target)&&baseUrl)url=normalizeProfileUrl(new URL(target,baseUrl).href);
-      else if(!target.includes('://')&&baseUrl&&/^[a-z0-9._~!$&'()*+,;=:@%\-/]+$/i.test(target))url=normalizeProfileUrl(new URL(target,baseUrl).href);
+      if(baseUrl&&!target.includes('://'))url=normalizeProfileUrl(new URL(target,baseUrl).href);
       else url=normalizeProfileUrl(target);
     }catch{invalid++;continue;}
-    if(label==='EVENT'||label==='EVENTS'||label==='LIVE'||label==='SCHEDULE'){if(!eventLists.includes(url)&&eventLists.length<6)eventLists.push(url);continue;}
-    if(!KNOWN_CATEGORIES.has(label)){invalid++;continue;}categories[label]??=[];if(!categories[label].includes(url)&&categories[label].length<3)categories[label].push(url);
+    if(label==='EVENT'||label==='EVENTS'||label==='LIVE'||label==='SCHEDULE'||label==='UPCOMING'||label==='GAMES'||label==='MATCHES'){
+      if(!eventLists.includes(url)&&eventLists.length<6)eventLists.push(url);continue;
+    }
+    if(!KNOWN_CATEGORIES.has(label)){invalid++;continue;}
+    categories[label]??=[];
+    if(!categories[label].includes(url)&&categories[label].length<3)categories[label].push(url);
   }
   return {categories,eventLists,invalid};
 }

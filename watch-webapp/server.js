@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {resolve,clearResolved} from './lib/resolver.js';
-import {knownEvents} from './lib/schedules.js';
+import {knownEvents,getLiveWindow,getKnownEvent} from './lib/schedules.js';
 import {searchEvents} from './lib/live-search.js';
 import {youtubeId} from './public/youtube-url.js';
 import {resolveYouTube} from './lib/youtube.js';
@@ -42,6 +42,17 @@ app.get('/api/events',limit(30),async(req,res)=>{
   if(!query) throw new AppError('ENTER_EVENT');
   res.setHeader('Cache-Control','no-store');
   res.json(await searchEvents(query));
+});
+app.get('/api/live-window',limit(30),async(req,res)=>{
+  const hours=Math.max(1,Math.min(Number(req.query.hours)||24,168));
+  res.setHeader('Cache-Control','no-store');
+  res.json(await getLiveWindow(hours));
+});
+app.get('/api/event/:id',limit(30),async(req,res)=>{
+  const event=getKnownEvent(req.params.id);
+  if(!event)throw new AppError('EVENT_UNAVAILABLE',404);
+  res.setHeader('Cache-Control','no-store');
+  res.json({event});
 });
 app.post('/api/resolve',limit(8),async(req,res)=>{
   const url=String(req.body?.url||'').trim();

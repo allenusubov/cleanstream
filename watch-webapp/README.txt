@@ -4,13 +4,15 @@ Minimal live-event search and direct-playback web app.
 
 ## Current behavior
 
-- Search NBA schedules and live/upcoming events.
+- Use ESPN as the primary multi-sport schedule/event layer for NBA, WNBA, NFL, college football, NHL, MLB, UFC, F1, ATP/WTA tennis, and major soccer competitions; unsupported feeds fail independently instead of blocking the rest.
 - Search YouTube Live when `YOUTUBE_API_KEY` is configured.
 - Search Twitch live channels when `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` are configured.
 - Resolve configured event/source pages with Playwright only when needed.
 - Publish a source after a fast direct-playback check, then continue deeper live-HLS stability verification in the background.
 - Play accepted media directly from the original source to the viewer. `/api/media` is intentionally disabled; Clean Stream does not relay the full video through Cloud Run.
 - Preserve search/player state in the URL so refresh and browser back work normally.
+- Show a spoiler-free LIVE / NEXT 24 HOURS homepage ticker backed by schedule data only; event clicks open an exact-event results page and EXPLORE opens the current 24-hour event set.
+- Preserve custom category routes exactly, including paths, query strings, and hash fragments such as `/#nfl`; TEST-discovered routes merge behind manual routes instead of simplifying them.
 - Treat source adapters as general by default; sport gating must be explicitly opted into.
 - Custom source TEST results merge with manual routes instead of overwriting them.
 - Custom route editing accepts full URLs or root-relative paths such as `NFL /nfl`.

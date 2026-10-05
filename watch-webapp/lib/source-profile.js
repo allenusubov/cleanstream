@@ -16,13 +16,13 @@ const cleanCandidate=(value,base)=>{
   try {
     const url=new URL(value,base);
     if(!['http:','https:'].includes(url.protocol)||url.username||url.password)return null;
-    url.hash='';return url.href;
+    return url.href;
   } catch{return null;}
 };
 const linkText=link=>{
   try {
     const url=new URL(link.url);
-    return normalize(`${link.text||''} ${decodeURIComponent(url.pathname)} ${decodeURIComponent(url.search)}`);
+    return normalize(`${link.text||''} ${decodeURIComponent(url.pathname)} ${decodeURIComponent(url.search)} ${decodeURIComponent(url.hash)}`);
   }catch{return normalize(link.text||'');}
 };
 function wordHit(text,term){

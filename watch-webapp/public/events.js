@@ -22,17 +22,25 @@ function distance(a,b) {
   for (let i=1;i<=a.length;i++) { const next=[i]; for(let j=1;j<=b.length;j++) next[j]=Math.min(next[j-1]+1,row[j]+1,row[j-1]+(a[i-1]!==b[j-1])); row=next; }
   return row[b.length];
 }
+export const sportAliases={
+  NBA:['nba','basketball'],WNBA:['wnba'],NFL:['nfl','american football'],CFB:['cfb','college football','ncaa football'],
+  NHL:['nhl','hockey'],MLB:['mlb','baseball'],UFC:['ufc','mma'],BOXING:['boxing'],F1:['f1','formula 1','formula one'],
+  TENNIS:['tennis','atp','wta'],SOCCER:['soccer','mls','epl','premier league','champions league','ucl']
+};
 export function parseQuery(raw) {
-  const query = normalize(raw).replace(/\b(vs|versus|v|at|nba|basketball|live|today|game|games|watch|streams|stream)\b/g,' ').replace(/\s+/g,' ').trim();
-  if (!query) return {kind:'league',teams:[]};
-  if (/\b(nfl|ufc|nhl|mlb|soccer|boxing|football|f1)\b/.test(query)) return {kind:'unsupported',teams:[]};
+  const original=normalize(raw);
+  const explicit=Object.entries(sportAliases).filter(([,aliases])=>aliases.some(alias=>` ${original} `.includes(` ${normalize(alias)} `))).map(([key])=>key);
+  const query = original.replace(/\b(vs|versus|v|at|nba|basketball|live|today|game|games|watch|streams|stream)\b/g,' ').replace(/\s+/g,' ').trim();
+  if (!query) return {kind:'league',league:explicit[0]||'NBA',leagues:explicit,teams:[]};
   const words=query.split(' ');
   const matched=teams.filter(team=>team.aliases.some(alias=>{
     const a=normalize(alias);
     if (a.includes(' ')) return ` ${query} `.includes(` ${a} `);
     return words.some(w=>w===a || (a.length>=5 && w.length>=5 && distance(a,w)<=1));
   }));
-  return {kind:matched.length===2?'matchup':matched.length===1?'team':matched.length?'ambiguous':'unknown',teams:matched};
+  if(matched.length)return {kind:matched.length===2?'matchup':matched.length===1?'team':'ambiguous',league:'NBA',leagues:['NBA'],teams:matched};
+  if(explicit.length)return {kind:'sport',league:explicit[0],leagues:explicit,teams:[]};
+  return {kind:'unknown',teams:[]};
 }
 export function matchesParticipants(text, participants) {
   const query=normalize(text);

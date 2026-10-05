@@ -5,7 +5,7 @@ async function safeList(values=[],limit=12){
   const out=[],seen=new Set();
   for(const value of (Array.isArray(values)?values:[]).slice(0,limit)){
     try{
-      const url=await safeURL(String(value||''));url.hash='';
+      const url=await safeURL(String(value||''));
       if(seen.has(url.href))continue;seen.add(url.href);out.push(url.href);
     }catch{}
   }
@@ -18,7 +18,7 @@ export async function customRegistry(values=[]){
   for(const value of values.slice(0,40)){
     const raw=String(typeof value==='object'?value?.url:value||'').trim();if(!raw)continue;
     let url;try{url=await safeURL(raw.includes('://')?raw:`https://${raw}`);}catch{continue;}
-    url.hash='';const normalized=url.href;
+    const normalized=url.href;
     if(seen.has(normalized))continue;seen.add(normalized);
     const host=url.hostname.toLowerCase().replace(/^www\./,'');
     const id=crypto.createHash('sha256').update(normalized).digest('hex').slice(0,12);

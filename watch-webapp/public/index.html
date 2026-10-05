@@ -8,7 +8,7 @@
   <title>Clean Stream</title>
   <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
   <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
-  <link rel="stylesheet" href="/styles.css?v=0.8.1" />
+  <link rel="stylesheet" href="/styles.css?v=0.11.0" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -21,6 +21,14 @@
       <div class="home-spacer"></div>
 
       <section class="home-inputs" aria-label="Find a stream">
+        <div class="ticker-row" id="live-ticker-row">
+          <div class="ticker-field">
+            <div class="live-ticker" id="live-ticker" aria-label="Live and upcoming events">
+              <div class="ticker-track" id="ticker-track"><span class="ticker-loading">LOADING LIVE EVENTS</span></div>
+            </div>
+          </div>
+          <button class="text-action" id="explore-button" type="button">EXPLORE</button>
+        </div>
         <form class="search-row" id="event-form">
           <input id="event-query" type="search" placeholder="FIND LIVE EVENT" aria-label="Find live event" autocomplete="off" maxlength="100" />
           <button class="text-action" id="search-button" type="submit">SEARCH</button>
@@ -34,8 +42,7 @@
       <section id="search-results" class="search-results" aria-label="Event results" hidden></section>
       <button class="settings-trigger" id="settings-button" type="button" aria-label="Custom source settings" title="Custom source settings">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path class="settings-trigger-body" d="M20.3 13v-2l-2.2-.7a7 7 0 0 0-.6-1.5l1.1-2-1.4-1.4-2 1.1a7 7 0 0 0-1.5-.6L13 3.7h-2l-.7 2.2a7 7 0 0 0-1.5.6l-2-1.1-1.4 1.4 1.1 2a7 7 0 0 0-.6 1.5l-2.2.7v2l2.2.7c.1.5.3 1 .6 1.5l-1.1 2 1.4 1.4 2-1.1c.5.3 1 .5 1.5.6l.7 2.2h2l.7-2.2c.5-.1 1-.3 1.5-.6l2 1.1 1.4-1.4-1.1-2c.3-.5.5-1 .6-1.5l2.2-.7Z" fill="currentColor"/>
-          <circle class="settings-trigger-hole" cx="12" cy="12" r="3.9"/>
+          <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M20.3 13v-2l-2.2-.7a7 7 0 0 0-.6-1.5l1.1-2-1.4-1.4-2 1.1a7 7 0 0 0-1.5-.6L13 3.7h-2l-.7 2.2a7 7 0 0 0-1.5.6l-2-1.1-1.4 1.4 1.1 2a7 7 0 0 0-.6 1.5l-2.2.7v2l2.2.7c.1.5.3 1 .6 1.5l-1.1 2 1.4 1.4 2-1.1c.5.3 1 .5 1.5.6l.7 2.2h2l.7-2.2c.5-.1 1-.3 1.5-.6l2 1.1 1.4-1.4-1.1-2c.3-.5.5-1 .6-1.5l2.2-.7ZM12 8.1a3.9 3.9 0 1 0 0 7.8 3.9 3.9 0 1 0 0-7.8Z"/>
         </svg>
       </button>
     </section>
@@ -107,7 +114,7 @@
   </main>
 
   <script>window.__onGCastApiAvailable = value => { window.__castReady = value; };</script>
-  <script type="module" src="/app.js?v=0.9.0"></script>
+  <script type="module" src="/app.js?v=0.11.0"></script>
   <script async src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
 </html>
