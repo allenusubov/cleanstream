@@ -8,7 +8,7 @@
   <title>Clean Stream</title>
   <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
   <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
-  <link rel="stylesheet" href="/styles.css?v=0.11.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.12.0" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -29,6 +29,9 @@
           </div>
           <button class="text-action" id="explore-button" type="button">EXPLORE</button>
         </div>
+        <div class="explore-filter-row" id="explore-filter-row" hidden>
+          <div class="explore-filters" id="explore-filters" aria-label="Explore event categories"></div>
+        </div>
         <form class="search-row" id="event-form">
           <input id="event-query" type="search" placeholder="FIND LIVE EVENT" aria-label="Find live event" autocomplete="off" maxlength="100" />
           <button class="text-action" id="search-button" type="submit">SEARCH</button>
@@ -40,7 +43,7 @@
         <p class="message" id="home-message" aria-live="polite"></p>
       </section>
       <section id="search-results" class="search-results" aria-label="Event results" hidden></section>
-      <button class="settings-trigger" id="settings-button" type="button" aria-label="Custom source settings" title="Custom source settings">
+      <button class="settings-trigger" id="settings-button" type="button" aria-label="Settings" title="Settings">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M20.3 13v-2l-2.2-.7a7 7 0 0 0-.6-1.5l1.1-2-1.4-1.4-2 1.1a7 7 0 0 0-1.5-.6L13 3.7h-2l-.7 2.2a7 7 0 0 0-1.5.6l-2-1.1-1.4 1.4 1.1 2a7 7 0 0 0-.6 1.5l-2.2.7v2l2.2.7c.1.5.3 1 .6 1.5l-1.1 2 1.4 1.4 2-1.1c.5.3 1 .5 1.5.6l.7 2.2h2l.7-2.2c.5-.1 1-.3 1.5-.6l2 1.1 1.4-1.4-1.1-2c.3-.5.5-1 .6-1.5l2.2-.7ZM12 8.1a3.9 3.9 0 1 0 0 7.8 3.9 3.9 0 1 0 0-7.8Z"/>
         </svg>
@@ -56,14 +59,44 @@
         </div>
       </header>
 
-      <section class="settings-panel" aria-label="Custom sources">
-        <h1 class="settings-title">CUSTOM SOURCES</h1>
-        <form class="search-row settings-add-row" id="custom-source-form">
-          <textarea id="custom-source-url" rows="4" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ADD SOURCE URLS" aria-label="Add source URLs, one per line"></textarea>
-          <button class="text-action" type="submit">ADD</button>
-        </form>
-        <p class="message settings-message" id="settings-message" aria-live="polite"></p>
-        <div class="custom-source-list" id="custom-source-list"></div>
+      <section class="settings-panel" aria-label="Settings">
+        <section class="settings-page is-active" data-settings-page="menu">
+          <h1 class="settings-title">SETTINGS</h1>
+          <nav class="settings-directory" aria-label="Settings sections">
+            <button class="settings-directory-row" type="button" data-open-settings="sources"><span>CUSTOM SOURCES</span><span aria-hidden="true">&gt;</span></button>
+            <button class="settings-directory-row" type="button" data-open-settings="preferences"><span>EVENT DISPLAY PREFERENCES</span><span aria-hidden="true">&gt;</span></button>
+          </nav>
+        </section>
+
+        <section class="settings-page" data-settings-page="sources" hidden>
+          <h1 class="settings-title">CUSTOM SOURCES</h1>
+          <form class="search-row settings-add-row" id="custom-source-form">
+            <textarea id="custom-source-url" rows="4" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ADD SOURCE URLS" aria-label="Add source URLs, one per line"></textarea>
+            <button class="text-action" type="submit">ADD</button>
+          </form>
+          <p class="message settings-message" id="settings-message" aria-live="polite"></p>
+          <div class="custom-source-list" id="custom-source-list"></div>
+        </section>
+
+        <section class="settings-page" data-settings-page="preferences" hidden>
+          <h1 class="settings-title">EVENT DISPLAY PREFERENCES</h1>
+          <div class="preference-section">
+            <h2 class="preference-heading">CATEGORIES</h2>
+            <p class="preference-note">DRAG TO SET PRIORITY · SHOWTIME STILL COMES FIRST</p>
+            <div class="preference-list" id="event-category-list"></div>
+          </div>
+          <div class="preference-section favorites-section">
+            <h2 class="preference-heading">FAVORITES</h2>
+            <p class="preference-note">ONE TEAM, ATHLETE OR FIGHTER PER LINE · FAVORITES BREAK TIES AT THE SAME SHOWTIME</p>
+            <form class="favorites-form" id="favorites-form">
+              <textarea id="favorites-input" rows="6" autocomplete="off" autocapitalize="words" spellcheck="false" placeholder="NEW YORK KNICKS
+JON JONES
+MAX VERSTAPPEN" aria-label="Favorite teams, athletes or fighters"></textarea>
+              <button class="text-action" type="submit">SAVE</button>
+            </form>
+            <p class="message settings-message" id="preferences-message" aria-live="polite"></p>
+          </div>
+        </section>
       </section>
     </section>
 
@@ -114,7 +147,7 @@
   </main>
 
   <script>window.__onGCastApiAvailable = value => { window.__castReady = value; };</script>
-  <script type="module" src="/app.js?v=0.11.0"></script>
+  <script type="module" src="/app.js?v=0.12.0"></script>
   <script async src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
 </html>

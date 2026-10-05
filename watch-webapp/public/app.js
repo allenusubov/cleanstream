@@ -3,6 +3,7 @@ import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
 import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,removeCustomSource,customSourceDomain,profileLines,parseProfileLines} from './custom-sources.js';
+import {loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents} from './event-preferences.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
 const playerView = $('[data-view="player"]');
@@ -10,6 +11,10 @@ const settingsView = $('[data-view="settings"]');
 const settingsList = $('#custom-source-list');
 const settingsMessage = $('#settings-message');
 const customSourceInput = $('#custom-source-url');
+const categoryList=$('#event-category-list');
+const favoritesForm=$('#favorites-form');
+const favoritesInput=$('#favorites-input');
+const preferencesMessage=$('#preferences-message');
 const streamInput = $('#stream-url');
 const homeMessage = $('#home-message');
 const sourceLink = $('#source-link');
@@ -24,6 +29,7 @@ const refreshButton = $('#refresh-button');
 const liveButton = $('#live-button');
 const tvButton = $('#tv-button');
 const tickerTrack=$('#ticker-track');
+const liveTicker=$('#live-ticker');
 const exploreButton=$('#explore-button');
 
 let hls = null;
@@ -58,6 +64,8 @@ let remotePosition=-1;
 let recoveryCycles=0;
 let liveWindowEvents=[];
 let liveWindowUpdated=0;
+let tickerFrame=0,tickerLast=0,tickerPauseUntil=0,tickerSetWidth=0,tickerNormalizing=false,tickerAutoScrolling=false,tickerAutoScrollAt=0,tickerHovered=false;
+let currentSettingsSection='menu';
 const youtube=new YouTubePlayer($('#youtube-player'),()=>syncControls(),error=>say(readable(error)));
 const twitch=new TwitchPlayer($('#twitch-player'),()=>syncControls(),error=>say(readable(error)));
 const isYouTube=()=>candidate?.provider==='youtube';
@@ -106,14 +114,36 @@ function tickerEventButton(event){
   });
   return button;
 }
+function pauseTicker(ms=3500){tickerPauseUntil=Math.max(tickerPauseUntil,performance.now()+ms);}
+function normalizeTickerPosition(){
+  if(!tickerSetWidth||tickerNormalizing)return;
+  tickerNormalizing=true;
+  if(liveTicker.scrollLeft<tickerSetWidth*.45)liveTicker.scrollLeft+=tickerSetWidth;
+  else if(liveTicker.scrollLeft>tickerSetWidth*1.55)liveTicker.scrollLeft-=tickerSetWidth;
+  tickerNormalizing=false;
+}
+function tickerLoop(now){
+  if(!tickerLast)tickerLast=now;
+  const dt=Math.min(50,now-tickerLast);tickerLast=now;
+  if(tickerSetWidth&&!tickerHovered&&now>tickerPauseUntil&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
+    tickerAutoScrolling=true;tickerAutoScrollAt=performance.now();liveTicker.scrollLeft+=dt*.035;normalizeTickerPosition();tickerAutoScrolling=false;
+  }
+  tickerFrame=requestAnimationFrame(tickerLoop);
+}
+function startTickerMotion(){
+  cancelAnimationFrame(tickerFrame);tickerLast=0;
+  requestAnimationFrame(()=>{
+    const first=tickerTrack.querySelector('.ticker-set');tickerSetWidth=first?.getBoundingClientRect().width||0;
+    if(tickerSetWidth){liveTicker.scrollLeft=tickerSetWidth;normalizeTickerPosition();}
+    tickerFrame=requestAnimationFrame(tickerLoop);
+  });
+}
 function renderTicker(events){
-  liveWindowEvents=Array.isArray(events)?events:[];tickerTrack.replaceChildren();tickerTrack.classList.remove('is-moving');
-  if(!liveWindowEvents.length){const empty=document.createElement('span');empty.className='ticker-empty';empty.textContent='NO LIVE / NEXT 24 HOURS EVENTS';tickerTrack.append(empty);return;}
-  const makeSet=()=>{const set=document.createElement('div');set.className='ticker-set';for(const event of liveWindowEvents)set.append(tickerEventButton(event));return set;};
-  tickerTrack.append(makeSet(),makeSet());
-  const chars=liveWindowEvents.reduce((sum,event)=>sum+tickerLabel(event).length,0);
-  tickerTrack.style.setProperty('--ticker-duration',`${Math.max(24,Math.min(90,chars*.22))}s`);
-  requestAnimationFrame(()=>tickerTrack.classList.add('is-moving'));
+  const prefs=loadEventPreferences();liveWindowEvents=Array.isArray(events)?events:[];
+  const visible=tickerEvents(liveWindowEvents,prefs);tickerTrack.replaceChildren();tickerSetWidth=0;
+  if(!visible.length){const empty=document.createElement('span');empty.className='ticker-empty';empty.textContent='NO LIVE / UPCOMING EVENTS';tickerTrack.append(empty);return;}
+  const makeSet=()=>{const set=document.createElement('div');set.className='ticker-set';for(const event of visible)set.append(tickerEventButton(event));return set;};
+  tickerTrack.append(makeSet(),makeSet(),makeSet());startTickerMotion();
 }
 async function loadLiveWindow(force=false){
   const key='cleanstream.liveWindow.v1';
@@ -130,6 +160,26 @@ async function loadLiveWindow(force=false){
     return {events:liveWindowEvents};
   }
 }
+liveTicker.addEventListener('mouseenter',()=>{tickerHovered=true;pauseTicker(1200);});
+liveTicker.addEventListener('mouseleave',()=>{tickerHovered=false;pauseTicker(600);});
+liveTicker.addEventListener('pointerdown',()=>pauseTicker(4500));
+liveTicker.addEventListener('touchstart',()=>pauseTicker(4500),{passive:true});
+liveTicker.addEventListener('scroll',()=>{if(!tickerAutoScrolling&&performance.now()-tickerAutoScrollAt>100)pauseTicker(2200);normalizeTickerPosition();},{passive:true});
+liveTicker.addEventListener('wheel',event=>{
+  if(Math.abs(event.deltaY)>Math.abs(event.deltaX)){event.preventDefault();liveTicker.scrollLeft+=event.deltaY;}
+  pauseTicker(3500);normalizeTickerPosition();
+},{passive:false});
+let tickerDrag=null;
+liveTicker.addEventListener('pointerdown',event=>{
+  if(event.pointerType==='touch')return;
+  tickerDrag={id:event.pointerId,x:event.clientX,left:liveTicker.scrollLeft};liveTicker.setPointerCapture?.(event.pointerId);
+});
+liveTicker.addEventListener('pointermove',event=>{
+  if(!tickerDrag||tickerDrag.id!==event.pointerId)return;liveTicker.scrollLeft=tickerDrag.left-(event.clientX-tickerDrag.x);pauseTicker(3500);
+});
+liveTicker.addEventListener('pointerup',event=>{if(tickerDrag?.id===event.pointerId)tickerDrag=null;});
+liveTicker.addEventListener('pointercancel',()=>{tickerDrag=null;});
+addEventListener('cleanstream:event-preferences-changed',()=>renderTicker(liveWindowEvents));
 exploreButton.addEventListener('click',async()=>{
   if(!liveWindowEvents.length||Date.now()-liveWindowUpdated>60000)await loadLiveWindow(true);
   leavePlayer();showView('home');navigate({view:'explore'});search.explore(liveWindowEvents);
@@ -199,6 +249,44 @@ function showView(name) {
   playerView.setAttribute('aria-hidden', String(name !== 'player'));
   settingsView.setAttribute('aria-hidden', String(name !== 'settings'));
 }
+function showSettingsPage(section='menu') {
+  const allowed=new Set(['menu','sources','preferences']);currentSettingsSection=allowed.has(section)?section:'menu';
+  document.querySelectorAll('[data-settings-page]').forEach(page=>{
+    const active=page.dataset.settingsPage===currentSettingsSection;page.hidden=!active;page.classList.toggle('is-active',active);
+  });
+  settingsMessage.textContent='';preferencesMessage.textContent='';
+  if(currentSettingsSection==='sources'){customSourceInput.value='';renderSettingsSources();}
+  if(currentSettingsSection==='preferences')renderEventPreferences();
+}
+function openSettingsPage(section='menu',push=true){
+  showView('settings');showSettingsPage(section);if(push)navigate({view:'settings',section});
+}
+function renderEventPreferences(){
+  const prefs=loadEventPreferences();categoryList.replaceChildren();favoritesInput.value=prefs.favorites.join('\n');
+  for(const item of prefs.categories){
+    const row=document.createElement('div');row.className=`preference-row${item.enabled?'':' is-off'}`;row.dataset.key=item.key;
+    const handle=document.createElement('button');handle.type='button';handle.className='preference-drag';handle.setAttribute('aria-label',`Reorder ${item.key}`);handle.textContent='≡';
+    const name=document.createElement('span');name.className='preference-name';name.textContent=item.key;
+    const toggle=document.createElement('button');toggle.type='button';toggle.className='text-action preference-toggle';toggle.textContent=item.enabled?'ON':'OFF';
+    toggle.addEventListener('click',()=>{setEventCategoryEnabled(item.key,!item.enabled);renderEventPreferences();});
+    let drag=null;
+    handle.addEventListener('pointerdown',event=>{
+      event.preventDefault();drag={id:event.pointerId};row.classList.add('is-dragging');handle.setPointerCapture?.(event.pointerId);pauseTicker(5000);
+    });
+    handle.addEventListener('pointermove',event=>{
+      if(!drag||drag.id!==event.pointerId)return;
+      const target=document.elementFromPoint(event.clientX,event.clientY)?.closest('.preference-row');
+      if(!target||target===row||target.parentElement!==categoryList)return;
+      const rect=target.getBoundingClientRect();categoryList.insertBefore(row,event.clientY<rect.top+rect.height/2?target:target.nextSibling);
+    });
+    const finish=event=>{
+      if(!drag||event&&drag.id!==event.pointerId)return;drag=null;row.classList.remove('is-dragging');
+      setEventCategoryOrder([...categoryList.children].map(node=>node.dataset.key));renderEventPreferences();
+    };
+    handle.addEventListener('pointerup',finish);handle.addEventListener('pointercancel',finish);
+    row.append(handle,name,toggle);categoryList.append(row);
+  }
+}
 function renderSourceProfile(copy,item) {
   const profile=document.createElement('div');profile.className='custom-source-profile';
   const entries=[];
@@ -250,9 +338,7 @@ function renderSettingsSources() {
     actions.append(toggle,test,edit,remove);row.append(copy,actions);settingsList.append(row);
   }
 }
-function openSettings() {
-  settingsMessage.textContent='';customSourceInput.value='';renderSettingsSources();showView('settings');navigate({view:'settings'});
-}
+function openSettings() {openSettingsPage('menu');}
 
 function say(text = '') { message.textContent = text; }
 function placeholder(text) {
@@ -623,6 +709,8 @@ tvButton.addEventListener('click', async () => {
 });
 $('#link-form').addEventListener('submit', event => {event.preventDefault();openStream();});
 $('#settings-button').addEventListener('click', openSettings);
+document.querySelectorAll('[data-open-settings]').forEach(button=>button.addEventListener('click',()=>openSettingsPage(button.dataset.openSettings)));
+favoritesForm.addEventListener('submit',event=>{event.preventDefault();const prefs=setEventFavorites(favoritesInput.value);favoritesInput.value=prefs.favorites.join('\n');preferencesMessage.textContent='FAVORITES SAVED';});
 $('#custom-source-form').addEventListener('submit',event=>{
   event.preventDefault();settingsMessage.textContent='';
   try{
@@ -637,6 +725,7 @@ $('#custom-source-form').addEventListener('submit',event=>{
   }catch(error){settingsMessage.textContent=error.message||'ENTER VALID SOURCE URLS';customSourceInput.focus();}
 });
 $('#settings-back').addEventListener('click',()=>{
+  if(currentSettingsSection!=='menu'){showSettingsPage('menu');navigate({view:'settings',section:'menu'},true);return;}
   if(history.state?.cleanStream&&history.state.depth>0)history.back();
   else {navigate({view:'home'},true);restoreRoute();}
 });
@@ -740,7 +829,7 @@ function leavePlayer() {
 function navigate(state,replace=false) {
   const url=new URL('/',location.origin);
   if(state.q)url.searchParams.set('q',state.q);
-  if(state.view==='settings')url.searchParams.set('settings','1');
+  if(state.view==='settings')url.searchParams.set('settings',state.section||'menu');
   if(state.view==='explore')url.searchParams.set('explore','1');
   if(state.view==='event'&&state.event)url.searchParams.set('event',state.event);
   if(state.view==='player') {
@@ -758,8 +847,8 @@ async function restoreRoute() {
   const params=new URL(location.href).searchParams;
   search.stop();leavePlayer();
   const q=params.get('q'),url=params.get('watch');
-  if(params.get('settings')==='1'){
-    settingsMessage.textContent='';renderSettingsSources();showView('settings');return;
+  if(params.has('settings')){
+    const section=params.get('settings');showView('settings');showSettingsPage(section==='1'?'menu':section||'menu');return;
   }
   if(url) {
     streamInput.value=url;

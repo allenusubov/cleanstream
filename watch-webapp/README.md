@@ -11,8 +11,8 @@ Minimal live-event search and direct-playback web app.
 - Publish a source after a fast direct-playback check, then continue deeper live-HLS stability verification in the background.
 - Play accepted media directly from the original source to the viewer. `/api/media` is intentionally disabled; Clean Stream does not relay the full video through Cloud Run.
 - Preserve search/player state in the URL so refresh and browser back work normally.
-- Show a spoiler-free LIVE / NEXT 24 HOURS homepage ticker backed by schedule data only; event clicks open an exact-event results page and EXPLORE opens the current 24-hour event set.
-- Preserve custom category routes exactly, including paths, query strings, and hash fragments such as `/#nfl`; TEST-discovered routes merge behind manual routes instead of simplifying them.
+- Show a spoiler-free homepage ticker backed by the LIVE + next-24-hour schedule. It auto-sweeps left but can be scrolled/dragged/swiped in either direction. Event clicks open an exact-event results page, while EXPLORE opens a chronological LIVE / UPCOMING view with category filters.
+- Preserve custom category routes exactly, including paths, query strings, and hash fragments such as `/#nfl`; TEST-discovered routes merge behind manual routes instead of simplifying them. Settings also include homepage event-category priority, category ON/OFF controls, and favorite teams/athletes/fighters.
 
 ## Source adapter hierarchy
 
