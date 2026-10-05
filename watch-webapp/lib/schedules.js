@@ -49,12 +49,13 @@ function competitorName(item){
 }
 function competitorId(item){return item?.team?.id||item?.athlete?.id||item?.id||'';}
 function competitorAbbr(item){return item?.team?.abbreviation||item?.athlete?.abbreviation||'';}
+function competitorShortName(item){return item?.team?.shortDisplayName||item?.team?.name||item?.athlete?.shortName||item?.athlete?.displayName||item?.shortDisplayName||item?.name||'';}
 
 export function normalizeEvent(raw,provider=byKey.get('NBA')){
   const competition=raw?.competitions?.[0];
   if(!raw?.id||!Number.isFinite(Date.parse(raw.date)))return null;
   const competitors=(competition?.competitors||[]).map(item=>({
-    id:String(competitorId(item)||''),name:competitorName(item),abbreviation:competitorAbbr(item)
+    id:String(competitorId(item)||''),name:competitorName(item),shortName:competitorShortName(item),abbreviation:competitorAbbr(item)
   })).filter(item=>item.name);
   const participants=competitors;
   const state=competition?.status?.type?.state||raw?.status?.type?.state||'pre';

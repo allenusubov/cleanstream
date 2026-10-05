@@ -74,8 +74,8 @@ test('playlist state and event timing do not confuse VOD with live events',()=>{
   const ranked=rank([{score:5},{score:10}]);assert.equal(ranked[0].recommended,true);assert.equal(ranked[1].recommended,false);
 });
 test('normalized schedules carry participants and real status',()=>{
-  const event=normalizeEvent({id:'123',date:'2026-10-04T23:00Z',competitions:[{status:{type:{state:'in'}},competitors:[{team:{id:'18',displayName:'New York Knicks'}},{team:{id:'2',displayName:'Boston Celtics'}}]}]});
-  assert.equal(event.id,'nba-123');assert.equal(event.status,'live');assert.equal(event.participants.length,2);
+  const event=normalizeEvent({id:'123',date:'2026-10-04T23:00Z',competitions:[{status:{type:{state:'in'}},competitors:[{team:{id:'18',displayName:'New York Knicks',shortDisplayName:'Knicks'}},{team:{id:'2',displayName:'Boston Celtics',shortDisplayName:'Celtics'}}]}]});
+  assert.equal(event.id,'nba-123');assert.equal(event.status,'live');assert.equal(event.participants.length,2);assert.equal(event.participants[0].shortName,'Knicks');
   assert.equal(normalizeEvent({id:'bad',date:'invalid'}),null);
 });
 test('simultaneous viewers share one validation job per event',()=>{

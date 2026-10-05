@@ -65,6 +65,16 @@ export function isFavoriteEvent(event,prefs=loadEventPreferences()){
   return prefs.favorites.some(value=>{const needle=normalize(value);return needle&&hay.includes(needle);});
 }
 
+
+export function compactEventTitle(event={}){
+  const participants=Array.isArray(event.participants)?event.participants.filter(Boolean):[];
+  if(participants.length===2){
+    const names=participants.map(item=>String(item.shortName||item.name||item.abbreviation||'').trim()).filter(Boolean);
+    if(names.length===2)return names.join(' VS ');
+  }
+  return String(event.title||'').trim();
+}
+
 export function tickerEvents(events,prefs=loadEventPreferences()){
   const enabled=new Set(prefs.categories.filter(item=>item.enabled).map(item=>item.key));
   const rank=new Map(prefs.categories.map((item,index)=>[item.key,index]));

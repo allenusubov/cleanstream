@@ -3,7 +3,7 @@ import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
 import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,removeCustomSource,customSourceDomain,profileLines,parseProfileLines} from './custom-sources.js';
-import {loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents} from './event-preferences.js';
+import {loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents,compactEventTitle} from './event-preferences.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
 const playerView = $('[data-view="player"]');
@@ -103,10 +103,12 @@ const search = initSearch(async (item, items, event) => {
 });
 
 function tickerLabel(event){
-  if(event.status==='live')return `${event.title} · LIVE`;
+  const title=compactEventTitle(event);
+  if(event.status==='live')return `${title} · LIVE`;
   const when=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(event.startTime)).toUpperCase();
-  return `${event.title} · ${when}`;
+  return `${title} · ${when}`;
 }
+
 function tickerEventButton(event){
   const button=document.createElement('button');button.type='button';button.className='ticker-event';button.textContent=tickerLabel(event);
   button.addEventListener('click',()=>{
@@ -114,9 +116,9 @@ function tickerEventButton(event){
   });
   return button;
 }
-const TICKER_STEP_MS=1000;
+const TICKER_HOLD_MS=1500;
 const TICKER_SLIDE_MS=180;
-function scheduleTicker(delay=TICKER_STEP_MS){
+function scheduleTicker(delay=TICKER_HOLD_MS){
   clearTimeout(tickerTimer);
   tickerTimer=setTimeout(stepTicker,Math.max(40,delay));
 }
@@ -136,6 +138,11 @@ function normalizeTickerPosition(){
   tickerNormalizing=false;
 }
 function tickerSets(){return [...tickerTrack.querySelectorAll('.ticker-set')];}
+function tickerTargetLeft(item){
+  if(!item)return liveTicker.scrollLeft;
+  const viewport=liveTicker.getBoundingClientRect(),rect=item.getBoundingClientRect();
+  return liveTicker.scrollLeft+(rect.left-viewport.left);
+}
 function animateTickerTo(target,duration=TICKER_SLIDE_MS){
   cancelAnimationFrame(tickerAnimationFrame);
   const start=liveTicker.scrollLeft,distance=target-start;
@@ -166,15 +173,15 @@ async function stepTicker(){
   const thirdButtons=[...(third?.querySelectorAll('.ticker-event')||[])];
   if(!middleButtons.length||!thirdButtons.length){scheduleTicker();return;}
   const left=liveTicker.scrollLeft;
-  let target=middleButtons.find(button=>button.offsetLeft>left+4);
+  let target=middleButtons.find(button=>tickerTargetLeft(button)>left+4);
   let wrap=false;
   if(!target){target=thirdButtons[0];wrap=true;}
-  await animateTickerTo(target.offsetLeft,TICKER_SLIDE_MS);
+  await animateTickerTo(tickerTargetLeft(target),TICKER_SLIDE_MS);
   if(wrap){
     markTickerProgrammaticScroll();
-    liveTicker.scrollLeft=middleButtons[0].offsetLeft;
+    liveTicker.scrollLeft=tickerTargetLeft(middleButtons[0]);
   }
-  scheduleTicker(Math.max(40,TICKER_STEP_MS-TICKER_SLIDE_MS));
+  scheduleTicker(TICKER_HOLD_MS);
 }
 function startTickerMotion(){
   clearTimeout(tickerTimer);cancelAnimationFrame(tickerAnimationFrame);tickerAnimating=false;
@@ -182,8 +189,8 @@ function startTickerMotion(){
     const sets=tickerSets(),first=sets[0],middle=sets[1];
     tickerSetWidth=first?.getBoundingClientRect().width||0;
     const firstMiddle=middle?.querySelector('.ticker-event');
-    if(tickerSetWidth&&firstMiddle){markTickerProgrammaticScroll();liveTicker.scrollLeft=firstMiddle.offsetLeft;}
-    if(tickerEventCount>1&&!matchMedia('(prefers-reduced-motion: reduce)').matches)scheduleTicker(TICKER_STEP_MS);
+    if(tickerSetWidth&&firstMiddle){markTickerProgrammaticScroll();liveTicker.scrollLeft=tickerTargetLeft(firstMiddle);}
+    if(tickerEventCount>1&&!matchMedia('(prefers-reduced-motion: reduce)').matches)scheduleTicker(TICKER_HOLD_MS);
   });
 }
 function renderTicker(events){
@@ -195,7 +202,7 @@ function renderTicker(events){
   tickerTrack.append(makeSet(),makeSet(),makeSet());startTickerMotion();
 }
 async function loadLiveWindow(force=false){
-  const key='cleanstream.liveWindow.v1';
+  const key='cleanstream.liveWindow.v2';
   if(!force){
     try{const saved=JSON.parse(sessionStorage.getItem(key)||'null');if(saved&&Date.now()-saved.time<60000){liveWindowUpdated=saved.time;renderTicker(saved.data.events||[]);return saved.data;}}catch{}
   }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {eventCategory,loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents} from '../public/event-preferences.js';
+import {eventCategory,loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents,compactEventTitle} from '../public/event-preferences.js';
 
 function memory(initial=''){
   let value=initial;
@@ -37,4 +37,14 @@ test('ticker keeps live and showtime first while preferences break same-time tie
   ];
   const out=tickerEvents(events,prefs);
   assert.deepEqual(out.map(x=>x.title),['LIVE NBA','NEW YORK KNICKS VS BOSTON CELTICS','OTHER FIGHT']);
+});
+
+
+test('compact ticker title prefers ESPN short team names',()=>{
+  const event={title:'Tampa Bay Lightning VS Philadelphia Flyers',participants:[{name:'Tampa Bay Lightning',shortName:'Lightning'},{name:'Philadelphia Flyers',shortName:'Flyers'}]};
+  assert.equal(compactEventTitle(event),'Lightning VS Flyers');
+});
+
+test('compact ticker title keeps non-matchup event title',()=>{
+  assert.equal(compactEventTitle({title:'FORMULA 1 JAPANESE GRAND PRIX',participants:[]}), 'FORMULA 1 JAPANESE GRAND PRIX');
 });
