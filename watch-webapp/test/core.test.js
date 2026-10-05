@@ -4,7 +4,7 @@ import {parseQuery,selectEvents,matchesParticipants} from '../public/events.js';
 import {privateAddress,safeURL,fetchLimited,WorkPool} from '../lib/network.js';
 import {parsePlaylist,validate} from '../lib/resolver.js';
 import {normalizeEvent} from '../lib/schedules.js';
-import {watchable,rank,eventJob,linkMatchesEvent} from '../lib/discovery.js';
+import {watchable,rank,eventJob,linkMatchesEvent,linkMatchesCategory} from '../lib/discovery.js';
 test('team, abbreviation, typo and matchup queries remain distinct',()=>{
   for(const q of ['KNICKS','NYK','NEW YORK KNICKS','kniks'])assert.equal(parseQuery(q).teams[0].id,'18');
   assert.equal(parseQuery('KNICKS CELTICS').kind,'matchup');
@@ -19,6 +19,15 @@ test('nonexistent matchups return no events, without confusing individual teams'
   assert.equal(selectEvents([event],parseQuery('knicks celtics')).length,1);
   assert.equal(matchesParticipants('Knicks vs Celtics',event.participants),true);
   assert.equal(matchesParticipants('Knicks vs Lakers',event.participants),false);
+});
+
+
+test('source adapters can recognize sport category links before searching event links',()=>{
+  const site={categoryAliases:{NFL:['american football']}};
+  const event={league:'NFL',sport:'football'};
+  assert.equal(linkMatchesCategory({url:'https://example.com/nfl',text:'NFL'},site,event),true);
+  assert.equal(linkMatchesCategory({url:'https://example.com/sports/american-football',text:''},site,event),true);
+  assert.equal(linkMatchesCategory({url:'https://example.com/nba',text:'NBA'},site,event),false);
 });
 
 test('source discovery can match an event from a clean URL slug even when anchor text is empty',()=>{

@@ -12,6 +12,28 @@ Minimal live-event search and direct-playback web app.
 - Play accepted media directly from the original source to the viewer. `/api/media` is intentionally disabled; Clean Stream does not relay the full video through Cloud Run.
 - Preserve search/player state in the URL so refresh and browser back work normally.
 
+## Source adapter hierarchy
+
+Configured/authorized sources are discovered with a bounded hierarchy instead of a broad crawl:
+
+1. **Site** — start from the source registry entry.
+2. **Category** — follow the matching league/sport navigation (for example NBA, NFL, tennis), or an explicit `categories` mapping when one is configured.
+3. **Event** — match only links for the selected event.
+4. **Mirrors** — inspect the event page for separate mirror/server/feed links, iframe players, and bounded mirror-tab interactions.
+
+Each distinct working mirror is validated independently and returned as its own source result. Mirrors from the same site intentionally keep the same displayed domain name. Index/category results are cached for two minutes and mirror discovery for one minute so repeated searches do not restart navigation from zero.
+
+Optional registry fields for site-specific tuning:
+
+- `categories`: map league/sport names to one or more category URLs.
+- `categoryAliases`: extra words used to recognize category links.
+- `mirrorSelector`: selector for mirror controls when the default buttons/tabs/links are not enough.
+- `mirrorTextPattern`: regular-expression string for mirror labels.
+- `maxMirrors`: bounded mirror count (default 10).
+- `mirrorSettleMs`: short wait after changing a mirror tab (default 500 ms).
+
+The generic adapter is intended for public or authorized source pages supplied in the registry.
+
 ## Optional search credentials
 
 ### YouTube Live
