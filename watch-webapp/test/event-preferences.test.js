@@ -11,6 +11,9 @@ test('event categories collapse soccer and tennis leagues into display categorie
   assert.equal(eventCategory({sport:'soccer',league:'EPL'}),'SOCCER');
   assert.equal(eventCategory({sport:'tennis',league:'ATP'}),'TENNIS');
   assert.equal(eventCategory({sport:'basketball',league:'NBA'}),'NBA');
+  assert.equal(eventCategory({sport:'basketball',league:'NCAAB'}),'NCAAB');
+  assert.equal(eventCategory({sport:'racing',league:'NASCAR'}),'NASCAR');
+  assert.equal(eventCategory({sport:'golf',league:'GOLF'}),'GOLF');
 });
 
 test('event display preferences persist toggles, order and favorites',()=>{

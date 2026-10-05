@@ -9,7 +9,7 @@ import {CATEGORY_ALIASES} from './source-profile.js';
 
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
 const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map(), mirrorCache=new Map(), mirrorJobs=new Map();
-const pool=new WorkPool(2,12,120);
+const pool=new WorkPool(2);
 const idFor=value=>crypto.createHash('sha256').update(value).digest('hex').slice(0,16);
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
 const HLS=/\.m3u8(?:$|\?)/i;
@@ -123,41 +123,43 @@ async function readIndex(site,indexUrl,event) {
 }
 
 // Resolve the site's own SITE -> CATEGORY step first. Explicit category URLs are
-// supported, but ordinary navigation links such as "NFL", "NBA" or "Tennis"
-// are discovered automatically and cached. If no category is found we fall back
-// to the site's bounded root/search pages rather than crawling arbitrary pages.
-export async function categoryPages(site,event) {
+// preferred. Light discovery stops at the first useful route; deep discovery
+// follows every mapped/discovered route while the lower-level network/browser
+// timeouts keep broken pages bounded.
+export async function categoryPages(site,event,{light=false}={}) {
   const roots=rootsFor(site,event);
   const key=String(event.league||event.sport||'').toUpperCase();
   const configured=site.categories?.[key]??site.categories?.[String(event.sport||'').toUpperCase()]??site.categories?.['*'];
-  const explicit=configuredUrls(site,configured,event,roots[0]);
-  if(explicit.length)return [...new Set(explicit)].slice(0,site.custom?10:4);
+  const explicit=[...new Set(configuredUrls(site,configured,event,roots[0]))];
+  if(explicit.length)return light?explicit.slice(0,1):explicit;
   const found=[];
-  for(const root of roots.slice(0,site.custom?10:4)) {
+  for(const root of roots) {
     try {
       const links=await readIndex(site,root,event);
-      for(const link of links)if(linkMatchesCategory(link,site,event))found.push(link.url);
-      if(found.length>=(site.custom?10:4))break;
+      for(const link of links)if(linkMatchesCategory(link,site,event)){
+        found.push(link.url);
+        if(light)return [link.url];
+      }
     } catch { /* Try the next configured root. */ }
   }
-  return [...new Set(found)].slice(0,site.custom?10:4);
+  return [...new Set(found)];
 }
 
-async function genericPages(site,event) {
+async function genericPages(site,event,{light=false}={}) {
   const roots=rootsFor(site,event);
-  const categories=await categoryPages(site,event);
-  // Category pages are the fast path. Search URLs and roots are bounded fallbacks
-  // for sites that list events directly on the homepage or expose a search page.
+  const categories=await categoryPages(site,event,{light});
   const urls=[...new Set([...categories,...roots])];
   const found=[];
   for(const indexUrl of urls) {
     try {
       const links=await readIndex(site,indexUrl,event);
-      for(const link of links) if(linkMatchesEvent(link,event)) found.push(link);
-      if(found.length>=(site.custom?18:8)) break;
-    } catch { /* Try the next bounded category/index/search page. */ }
+      for(const link of links) if(linkMatchesEvent(link,event)) {
+        found.push(link);
+        if(light)return [link];
+      }
+    } catch { /* Try the next category/index/search page. */ }
   }
-  return [...new Map(found.map(page=>[page.url,page])).values()].slice(0,site.custom?18:8);
+  return [...new Map(found.map(page=>[page.url,page])).values()];
 }
 
 function targetKey(target) {return `${target.kind||'page'}|${target.url}`;}
@@ -168,12 +170,12 @@ function addTarget(targets,target,base) {
   targets.set(key,{...target,url});
 }
 
-// Resolve EVENT -> MIRRORS. The event page itself is mirror 1. Then discover
-// separate mirror/server/feed links, iframe players and media URLs revealed by
-// bounded tab/button interactions. Each distinct mirror is later validated and
-// returned as an independent source result, while keeping the same site name.
-export async function mirrorTargets(site,page,event) {
-  const cacheKey=`${site.id}|${page.url}`;
+// Resolve EVENT -> MIRRORS. Light mode intentionally checks only the default
+// event page. Deep mode enumerates the event page, frames, media and mirror
+// controls so expanding an event can reveal the complete ordered source list.
+export async function mirrorTargets(site,page,event,{light=false}={}) {
+  if(light)return [{kind:'page',url:page.url,text:'DEFAULT'}];
+  const cacheKey=`deep|${site.id}|${page.url}`;
   const old=mirrorCache.get(cacheKey);
   if(old && Date.now()-old.time<60000)return old.targets;
   if(mirrorJobs.has(cacheKey))return mirrorJobs.get(cacheKey);
@@ -197,7 +199,7 @@ export async function mirrorTargets(site,page,event) {
             if(frame===browserPage.mainFrame())continue;
             const url=cleanUrl(frame.url(),page.url);if(url)addTarget(targets,{kind:'page',url,text:label||'FRAME'},page.url);
           }
-          const frames=await browserPage.locator('iframe[src]').evaluateAll(nodes=>nodes.slice(0,30).map(node=>({url:node.src,text:node.title||node.getAttribute('aria-label')||''}))).catch(()=>[]);
+          const frames=await browserPage.locator('iframe[src]').evaluateAll(nodes=>nodes.slice(0,60).map(node=>({url:node.src,text:node.title||node.getAttribute('aria-label')||''}))).catch(()=>[]);
           for(const frame of frames)addTarget(targets,{kind:'page',url:frame.url,text:frame.text||label||'FRAME'},page.url);
           for(const item of media.values())addTarget(targets,{...item,text:label||item.text},page.url);
         };
@@ -205,13 +207,13 @@ export async function mirrorTargets(site,page,event) {
 
         const selector=site.mirrorSelector||'a[href],button,[role="tab"],[role="button"],input[type="button"]';
         const controls=browserPage.locator(selector);
-        const items=await controls.evaluateAll(nodes=>nodes.slice(0,120).map((node,index)=>({
+        const items=await controls.evaluateAll(nodes=>nodes.slice(0,240).map((node,index)=>({
           index,
           tag:node.tagName,
           href:node.href||'',
           text:(node.getAttribute('aria-label')||node.textContent||node.value||'').replace(/\s+/g,' ').trim()
         }))).catch(()=>[]);
-        const candidates=items.filter(item=>likelyMirror(item.text,item.href,site)).slice(0,Number(site.maxMirrors)||10);
+        const candidates=items.filter(item=>likelyMirror(item.text,item.href,site));
         for(const item of candidates) {
           if(item.href) {
             addTarget(targets,{kind:'page',url:item.href,text:item.text||'MIRROR'},page.url);
@@ -222,13 +224,12 @@ export async function mirrorTargets(site,page,event) {
             await controls.nth(item.index).click({timeout:1000,force:true});
             await browserPage.waitForTimeout(Number(site.mirrorSettleMs)||500);
             await collect(item.text||'MIRROR');
-            // Preserve only newly revealed media as separately labelled mirrors too.
             for(const [url,target] of media)if(!before.has(url))addTarget(targets,{...target,text:item.text||'MIRROR'},page.url);
           } catch { /* A broken mirror control must not block other mirrors. */ }
         }
       });
     } catch { /* The event page itself can still be resolved as the default mirror. */ }
-    const result=[...targets.values()].slice(0,Number(site.maxMirrors)||10);
+    const result=[...targets.values()];
     mirrorCache.set(cacheKey,{time:Date.now(),targets:result});
     return result;
   })().finally(()=>mirrorJobs.delete(cacheKey));
@@ -248,13 +249,12 @@ function displayName(site,pageUrl='') {
 export function rank(sources) {
   return [...sources].sort((a,b)=>b.score-a.score).map((s,i)=>({...s,recommended:i===0}));
 }
-export function watchable(event,now=Date.now()) {
-  const start=Date.parse(event.startTime);
-  return event.status!=='finished' && start<=now+45*60000 && start>now-6*3600000;
+export function watchable(event) {
+  return Boolean(event) && event.status!=='finished';
 }
 export function siteSupportsEvent(site,event) {
-  // Source adapters are general by default. A registry entry is only sport-gated
-  // when it explicitly opts into restriction with restrictLeagues=true.
+  // Explicit adapter restrictions are preserved. Custom/general adapters are not
+  // sport-gated simply because only one category route happens to be known.
   if(site?.restrictLeagues!==true)return true;
   const leagues=Array.isArray(site?.leagues)?site.leagues.map(value=>String(value).toUpperCase()):[];
   const eventKeys=[event?.league,event?.sport].map(value=>String(value||'').toUpperCase()).filter(Boolean);
@@ -268,18 +268,21 @@ async function fastCandidates(target,origin) {
   const result=await resolve(target.url,origin,{progress:false});
   return result.candidates.filter(candidate=>candidate.live).map(candidate=>({...candidate,sourceUrl:target.url}));
 }
-export function eventJob(event,origin,customSites=[]) {
-  if(!watchable(event)) throw new AppError('NOT_STARTED',409);
+export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
+  if(!watchable(event)) throw new AppError('EVENT_UNAVAILABLE',409);
+  const light=mode==='light';
   const customKey=idFor(customSites.map(site=>JSON.stringify({
     root:site.indexUrls?.[0]||site.id,
     categories:site.categories||{},
     eventListUrls:site.eventListUrls||[]
   })).sort().join('|'));
-  const key=`${origin}|${event.id}|${customKey}`;
+  const baseKey=`${origin}|${event.id}|${customKey}`;
+  const key=`${baseKey}|${light?'light':'deep'}`;
   const old=jobs.get(key);
   if(old && (!old.done || old.expiresAt>Date.now())) return old;
-  const job={sources:[],done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false};
-  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status});
+  const seed=!light?jobs.get(`${baseKey}|light`)?.sources||[]:[];
+  const job={sources:seed.map(source=>({...source})),done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false,mode:light?'light':'deep'};
+  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status,mode:job.mode});
   job.publish=()=>{for(const listener of job.listeners) listener(job.snapshot());};
   job.start=()=>{
     if(job.started) return;job.started=true;
@@ -293,26 +296,28 @@ export function eventJob(event,origin,customSites=[]) {
         try{identity=new URL(identity).hostname.replace(/^www\./i,'');}catch{}
         if(!byHost.has(identity))byHost.set(identity,site);
       }
-      const sites=[...byHost.values()].filter(s=>(s.type==='streamed'||s.custom||event.participants?.length>=2) && siteSupportsEvent(s,event)).slice(0,24);
+      const sites=[...byHost.values()].filter(s=>(s.type==='streamed'||s.custom||event.participants?.length>=2) && siteSupportsEvent(s,event));
       let matched=0, unavailable=0;
       await Promise.allSettled(sites.map(async site=>{
         const statsKey=`${site.id}|${event.league}`;
         const stats=history.get(statsKey)||{success:0,attempts:0,totalMs:0};
         try {
-          const pages=site.events?.[event.id] ? [{url:site.events[event.id],text:event.title}] : site.type==='streamed'?await streamedPages(event):await genericPages(site,event);
-          const uniquePages=[...new Map(pages.map(p=>[p.url,p])).values()].slice(0,site.custom?12:6);
-          matched+=uniquePages.length;
-          if(!uniquePages.length)return;
-          const mirrorLists=await Promise.allSettled(uniquePages.map(page=>mirrorTargets(site,page,event)));
+          const pages=site.events?.[event.id] ? [{url:site.events[event.id],text:event.title}] : site.type==='streamed'?await streamedPages(event):await genericPages(site,event,{light});
+          const uniquePages=[...new Map(pages.map(p=>[p.url,p])).values()];
+          const pagesToCheck=light?uniquePages.slice(0,1):uniquePages;
+          matched+=pagesToCheck.length;
+          if(!pagesToCheck.length)return;
+          const mirrorLists=await Promise.allSettled(pagesToCheck.map(page=>mirrorTargets(site,page,event,{light})));
           const targets=[];
           for(let i=0;i<mirrorLists.length;i++)if(mirrorLists[i].status==='fulfilled'){
-            for(const target of mirrorLists[i].value)targets.push({...target,parentUrl:uniquePages[i].url});
+            for(const target of mirrorLists[i].value)targets.push({...target,parentUrl:pagesToCheck[i].url});
           }
-          const uniqueTargets=[...new Map(targets.map(target=>[targetKey(target),target])).values()].slice(0,Math.max(4,Number(site.maxMirrors)||10));
-          await Promise.allSettled(uniqueTargets.map(async target=>{
+          const uniqueTargets=[...new Map(targets.map(target=>[targetKey(target),target])).values()];
+          const targetsToCheck=light?uniqueTargets.slice(0,1):uniqueTargets;
+          await Promise.allSettled(targetsToCheck.map(async target=>{
             stats.attempts++;
             try {
-              const candidates=(await fastCandidates(target,origin)).sort((a,b)=>a.startupMs-b.startupMs).slice(0,4);
+              const candidates=(await fastCandidates(target,origin)).sort((a,b)=>a.startupMs-b.startupMs);
               if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
               for(const media of candidates) {
                 stats.success++;stats.totalMs+=media.startupMs;
@@ -321,20 +326,17 @@ export function eventJob(event,origin,customSites=[]) {
                 const source={...media,id:idFor(`${event.id}|${site.id}|${target.url}|${media.mediaUrl}`),siteId:site.id,name:site.name,
                   displayName:displayName(site,target.parentUrl||target.url),score,eventId:event.id,deepVerified:!media.isHls,
                   mirrorLabel:target.text||'',sourceUrl:target.kind==='page'?target.url:(target.parentUrl||media.sourceUrl)};
-                const duplicate=job.sources.some(s=>s.siteId===source.siteId&&s.mediaUrl===source.mediaUrl);
-                if(duplicate)continue;
-                job.sources.push(source);job.publish();
+                let activeSource=job.sources.find(s=>s.id===source.id);
+                if(!activeSource){activeSource=source;job.sources.push(activeSource);job.publish();}
 
-                // Deeper live-progression verification happens after publication. A
-                // mirror appears as soon as one real direct media segment works.
-                if(media.isHls && media.live) {
+                if(!light && media.isHls && media.live && !activeSource.deepVerified) {
                   try {
                     const deep=await validate({url:media.mediaUrl,isHls:true},origin,{progress:true});
-                    Object.assign(source,{segmentDuration:deep.segmentDuration,quality:deep.quality||source.quality,
+                    Object.assign(activeSource,{segmentDuration:deep.segmentDuration,quality:deep.quality||activeSource.quality,
                       deepVerified:true,verifiedAt:deep.verifiedAt,expiresAt:deep.expiresAt});
-                    source.score+=4;job.publish();
+                    activeSource.score+=4;job.publish();
                   } catch {
-                    const index=job.sources.indexOf(source);
+                    const index=job.sources.indexOf(activeSource);
                     if(index>=0)job.sources.splice(index,1);
                     job.publish();
                   }
@@ -348,7 +350,7 @@ export function eventJob(event,origin,customSites=[]) {
       job.status=job.sources.length?'READY':unavailable===sites.length && sites.length?'SOURCES_UNAVAILABLE':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
     }).catch(error=>{job.status=error.code||'SOURCES_UNAVAILABLE';}).finally(()=>{
       job.done=true;job.expiresAt=Date.now()+(job.sources.length?60000:30000);job.publish();
-      if(jobs.size>100) for(const [k,v] of jobs) if(v.done && v.expiresAt<Date.now()) jobs.delete(k);
+      if(jobs.size>300) for(const [k,v] of jobs) if(v.done && v.expiresAt<Date.now()) jobs.delete(k);
     });
   };
   jobs.set(key,job);return job;

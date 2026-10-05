@@ -14,47 +14,36 @@ import {scanSourceProfile} from './lib/source-profile.js';
 const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
 app.set('trust proxy',1);
-app.use(express.json({limit:'16kb'}));
+app.use(express.json({limit:'64kb'}));
 app.use((req,res,next)=>{
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
   next();
 });
-const buckets=new Map();
-function limit(max) {
-  return (req,res,next)=>{
-    const key=`${max}|${req.ip}`;
-    const now=Date.now();const old=(buckets.get(key)||[]).filter(t=>now-t<60000);
-    if(old.length>=max) return res.status(429).json({code:'USAGE_LIMIT'});
-    old.push(now);buckets.set(key,old);
-    if(buckets.size>2000) for(const [k,v] of buckets) if(v.at(-1)<now-60000) buckets.delete(k);
-    next();
-  };
-}
 function origin(req) {
   const configured=process.env.PUBLIC_ORIGIN;
   if(configured) return new URL(configured).origin;
   return `${req.protocol}://${req.get('host')}`;
 }
 app.get('/health',(_req,res)=>res.send('ok'));
-app.get('/api/events',limit(30),async(req,res)=>{
+app.get('/api/events',async(req,res)=>{
   const query=String(req.query.q||'').trim().slice(0,100);
   if(!query) throw new AppError('ENTER_EVENT');
   res.setHeader('Cache-Control','no-store');
   res.json(await searchEvents(query));
 });
-app.get('/api/live-window',limit(30),async(req,res)=>{
+app.get('/api/live-window',async(req,res)=>{
   const hours=Math.max(1,Math.min(Number(req.query.hours)||24,168));
   res.setHeader('Cache-Control','no-store');
   res.json(await getLiveWindow(hours));
 });
-app.get('/api/event/:id',limit(30),async(req,res)=>{
+app.get('/api/event/:id',async(req,res)=>{
   const event=getKnownEvent(req.params.id);
   if(!event)throw new AppError('EVENT_UNAVAILABLE',404);
   res.setHeader('Cache-Control','no-store');
   res.json({event});
 });
-app.post('/api/resolve',limit(8),async(req,res)=>{
+app.post('/api/resolve',async(req,res)=>{
   const url=String(req.body?.url||'').trim();
   const youtube=youtubeId(url);
   if(youtube)return res.json({sourceUrl:url,candidates:[await resolveYouTube(youtube)]});
@@ -68,7 +57,8 @@ async function streamEventSources(req,res){
   const event=knownEvents.get(req.params.id);
   if(!event) throw new AppError('EVENT_UNAVAILABLE',404);
   const customSites=await customRegistry(req.body?.customSources||[]);
-  const job=eventJob(event,origin(req),customSites);
+  const mode=req.body?.mode==='light'?'light':'deep';
+  const job=eventJob(event,origin(req),customSites,{mode});
   res.setHeader('Content-Type','application/x-ndjson');
   res.setHeader('Cache-Control','no-store, no-transform');
   res.setHeader('X-Accel-Buffering','no');
@@ -83,9 +73,34 @@ async function streamEventSources(req,res){
   res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);});
   write(job.snapshot());job.start();
 }
-app.get('/api/events/:id/sources',limit(30),streamEventSources);
-app.post('/api/events/:id/sources',limit(30),streamEventSources);
-app.post('/api/source-test',limit(12),async(req,res)=>{
+app.get('/api/events/:id/sources',streamEventSources);
+app.post('/api/events/:id/sources',streamEventSources);
+app.post('/api/explore-sources',async(req,res)=>{
+  const ids=[...new Set(Array.isArray(req.body?.eventIds)?req.body.eventIds.map(value=>String(value)):[])];
+  const events=ids.map(id=>knownEvents.get(id)).filter(Boolean);
+  const customSites=await customRegistry(req.body?.customSources||[]);
+  res.setHeader('Content-Type','application/x-ndjson');
+  res.setHeader('Cache-Control','no-store, no-transform');
+  res.setHeader('X-Accel-Buffering','no');
+  res.flushHeaders();
+  if(!events.length){res.write('{"type":"done"}\n');return res.end();}
+  let completed=0,closed=false;
+  const detach=[];
+  const maybeEnd=()=>{if(!closed&&completed>=events.length){closed=true;for(const fn of detach)fn();res.end();}};
+  for(const event of events){
+    const job=eventJob(event,origin(req),customSites,{mode:'light'});let counted=false;
+    const write=state=>{
+      if(closed||res.destroyed||res.writableEnded)return;
+      res.write(JSON.stringify(state)+'\n');
+      if(state.done&&!counted){counted=true;completed++;maybeEnd();}
+    };
+    job.listeners.add(write);detach.push(()=>job.listeners.delete(write));write(job.snapshot());job.start();
+  }
+  const heartbeat=setInterval(()=>{if(!closed&&!res.destroyed&&!res.writableEnded)res.write('{"type":"ping"}\n');},10000);
+  detach.push(()=>clearInterval(heartbeat));
+  res.on('close',()=>{closed=true;for(const fn of detach)fn();});
+});
+app.post('/api/source-test',async(req,res)=>{
   const raw=String(req.body?.url||'').trim();
   const url=await safeURL(raw.includes('://')?raw:`https://${raw}`);
   const profile=await scanSourceProfile(url.href);

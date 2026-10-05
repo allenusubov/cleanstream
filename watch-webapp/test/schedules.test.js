@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import dns from 'node:dns/promises';
 import {getLiveWindow,normalizeEvent,scheduleProviders} from '../lib/schedules.js';
 
+test('ESPN provider list includes expanded Explore categories',()=>{
+  for(const key of ['NCAAB','WNCAAB','NASCAR','INDYCAR','PGA','LPGA'])assert.ok(scheduleProviders.some(item=>item.key===key),key);
+});
+
 test('ESPN normalization supports non-NBA event-shaped sports',()=>{
   const ufc=scheduleProviders.find(item=>item.key==='UFC');
   const event=normalizeEvent({id:'999',name:'UFC 999: Example',date:'2026-10-05T23:00:00Z',status:{type:{state:'pre'}},competitions:[]},ufc);

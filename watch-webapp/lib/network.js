@@ -63,19 +63,19 @@ export async function fetchLimited(input, {signal, limit = 1024 * 1024, headers 
 }
 
 export class WorkPool {
-  constructor(max = 2, queueLimit = 10, dailyLimit = 240) {
-    this.max = max; this.queueLimit = queueLimit; this.dailyLimit = dailyLimit;
-    this.active = 0; this.queue = []; this.day = ''; this.used = 0;
+  constructor(max = 2) {
+    this.max = Math.max(1, Number(max) || 2);
+    this.active = 0;
+    this.queue = [];
   }
   async run(task) {
-    const day = new Date().toISOString().slice(0,10);
-    if (day !== this.day) { this.day = day; this.used = 0; }
-    if (this.used >= this.dailyLimit) throw new AppError('USAGE_LIMIT', 429);
-    if (this.active >= this.max && this.queue.length >= this.queueLimit) throw new AppError('BUSY', 429);
-    this.used++;
     if (this.active >= this.max) await new Promise(resolve => this.queue.push(resolve));
     else this.active++;
     try { return await task(); }
-    finally { const next = this.queue.shift(); if (next) next(); else this.active--; }
+    finally {
+      const next = this.queue.shift();
+      if (next) next();
+      else this.active--;
+    }
   }
 }

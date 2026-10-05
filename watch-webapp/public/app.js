@@ -64,7 +64,7 @@ let remotePosition=-1;
 let recoveryCycles=0;
 let liveWindowEvents=[];
 let liveWindowUpdated=0;
-let tickerTimer=0,tickerPauseUntil=0,tickerSetWidth=0,tickerNormalizing=false,tickerAutoScrolling=false,tickerAutoScrollAt=0,tickerHovered=false,tickerAnimating=false,tickerAnimationFrame=0,tickerEventCount=0;
+let tickerTimer=0,tickerPauseUntil=0,tickerSetWidth=0,tickerNormalizing=false,tickerAutoScrolling=false,tickerAutoScrollAt=0,tickerHovered=false,tickerAnimating=false,tickerAnimationFrame=0,tickerEventCount=0,tickerSuppressClickUntil=0;
 let currentSettingsSection='menu';
 const youtube=new YouTubePlayer($('#youtube-player'),()=>syncControls(),error=>say(readable(error)));
 const twitch=new TwitchPlayer($('#twitch-player'),()=>syncControls(),error=>say(readable(error)));
@@ -77,7 +77,6 @@ const friendly = {
   NO_MEDIA:"NO PLAYABLE VIDEO FOUND",
   DIRECT_BLOCKED:"PLAYBACK BLOCKED — THIS SOURCE CAN'T PLAY DIRECTLY ON YOUR DEVICE",
   SOURCE_FROZEN:'STREAM UNAVAILABLE — THIS SOURCE HAS STOPPED UPDATING',
-  USAGE_LIMIT:'CHECK LIMIT REACHED — TRY AGAIN LATER', BUSY:'CHECKS ARE BUSY — TRY AGAIN SHORTLY',
   DIRECT_ONLY:'THIS STREAM NEEDS TO BE OPENED AGAIN', NOT_STARTED:'THIS EVENT HAS NOT STARTED',
   CAST_UNAVAILABLE:'THIS SOURCE IS UNAVAILABLE ON YOUR TV',
   YOUTUBE_UNAVAILABLE:'YOUTUBE PLAYBACK UNAVAILABLE — TRY THE SOURCE LINK',
@@ -102,17 +101,17 @@ const search = initSearch(async (item, items, event) => {
   leavePlayer();showView('home');navigate({view:'search',q});
 });
 
-function tickerLabel(event){
-  const title=compactEventTitle(event);
-  if(event.status==='live')return `${title} · LIVE`;
-  const when=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(event.startTime)).toUpperCase();
-  return `${title} · ${when}`;
-}
-
 function tickerEventButton(event){
-  const button=document.createElement('button');button.type='button';button.className='ticker-event';button.textContent=tickerLabel(event);
-  button.addEventListener('click',()=>{
-    leavePlayer();showView('home');navigate({view:'event',event:event.id,q:event.title});search.showEvent(event);
+  const button=document.createElement('button');button.type='button';button.className='ticker-event';
+  const title=document.createElement('span');title.className='ticker-event-title';title.textContent=compactEventTitle(event);button.append(title,document.createTextNode(' · '));
+  if(event.status==='live'){
+    const live=document.createElement('span');live.className='inline-live';const dot=document.createElement('span');dot.className='live-dot';const label=document.createElement('span');label.textContent='LIVE';live.append(dot,label);button.append(live);
+  }else{
+    const when=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(event.startTime)).toUpperCase();button.append(document.createTextNode(when));
+  }
+  button.addEventListener('click',eventClick=>{
+    if(performance.now()<tickerSuppressClickUntil)return;
+    eventClick.preventDefault();leavePlayer();showView('home');navigate({view:'event',event:event.id,q:event.title});search.showEvent(event);
   });
   return button;
 }
@@ -228,12 +227,21 @@ liveTicker.addEventListener('wheel',event=>{
 let tickerDrag=null;
 liveTicker.addEventListener('pointerdown',event=>{
   if(event.pointerType==='touch')return;
-  tickerDrag={id:event.pointerId,x:event.clientX,left:liveTicker.scrollLeft};liveTicker.setPointerCapture?.(event.pointerId);
+  tickerDrag={id:event.pointerId,x:event.clientX,left:liveTicker.scrollLeft,moved:false,captured:false};
 });
 liveTicker.addEventListener('pointermove',event=>{
-  if(!tickerDrag||tickerDrag.id!==event.pointerId)return;liveTicker.scrollLeft=tickerDrag.left-(event.clientX-tickerDrag.x);pauseTicker(3500);
+  if(!tickerDrag||tickerDrag.id!==event.pointerId)return;
+  const delta=event.clientX-tickerDrag.x;
+  if(!tickerDrag.moved&&Math.abs(delta)<5)return;
+  tickerDrag.moved=true;
+  if(!tickerDrag.captured){liveTicker.setPointerCapture?.(event.pointerId);tickerDrag.captured=true;}
+  liveTicker.scrollLeft=tickerDrag.left-delta;pauseTicker(3500);
 });
-liveTicker.addEventListener('pointerup',event=>{if(tickerDrag?.id===event.pointerId)tickerDrag=null;});
+liveTicker.addEventListener('pointerup',event=>{
+  if(!tickerDrag||tickerDrag.id!==event.pointerId)return;
+  const moved=tickerDrag.moved;tickerDrag=null;
+  if(moved){tickerSuppressClickUntil=performance.now()+300;pauseTicker(3500);}
+});
 liveTicker.addEventListener('pointercancel',()=>{tickerDrag=null;});
 addEventListener('cleanstream:event-preferences-changed',()=>renderTicker(liveWindowEvents));
 exploreButton.addEventListener('click',async()=>{
@@ -465,6 +473,7 @@ function syncControls() {
   const atLive = isTwitch()?live&&!paused:target !== null && !paused && progressing && !busy && !castLoading &&
     position >= target - Math.max(2, segmentDuration / 2);
   liveButton.disabled = busy || !live;
+  liveButton.classList.toggle('has-live', live);
   liveButton.classList.toggle('is-live', atLive);
   liveButton.setAttribute('aria-label', atLive ? 'Playing live' : 'Go to live');
   liveButton.title = live ? (atLive ? 'At the latest available video' : 'Jump to live') : 'Live position unavailable';

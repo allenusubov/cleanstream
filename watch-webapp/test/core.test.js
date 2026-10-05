@@ -51,10 +51,10 @@ test('redirects cannot fetch private addresses and byte samples stay bounded',as
     await assert.rejects(fetchLimited('https://8.8.8.8',{limit:64}));
   }finally{global.fetch=old;}
 });
-test('work pool limits concurrency and refuses excessive work',async()=>{
-  const pool=new WorkPool(2,3,5);let active=0,peak=0;
-  await Promise.all(Array.from({length:5},()=>pool.run(async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,5));active--;})));
-  assert.equal(peak,2);assert.equal(pool.active,0);await assert.rejects(pool.run(async()=>{}),/USAGE_LIMIT/);
+test('work pool limits concurrency and queues extra work without usage-limit errors',async()=>{
+  const pool=new WorkPool(2);let active=0,peak=0,finished=0;
+  await Promise.all(Array.from({length:12},()=>pool.run(async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,2));active--;finished++;})));
+  assert.equal(peak,2);assert.equal(pool.active,0);assert.equal(finished,12);
 });
 test('HLS validation checks direct segment access, not just manifest HTTP status',async()=>{
   const old=global.fetch;let segmentCORS=false;
@@ -70,7 +70,8 @@ test('playlist state and event timing do not confuse VOD with live events',()=>{
   const p=parsePlaylist('#EXTM3U\n#EXT-X-TARGETDURATION:8\n#EXT-X-MEDIA-SEQUENCE:23\n#EXTINF:8,\na.ts','https://example.com/live/index.m3u8');
   assert.equal(p.duration,8);assert.equal(p.sequence,23);assert.equal(p.live,true);assert.equal(p.segments[0],'https://example.com/live/a.ts');
   const future={id:'nba-future',status:'scheduled',startTime:new Date(Date.now()+86400000).toISOString()};
-  assert.equal(watchable(future),false);assert.throws(()=>eventJob(future,'https://example.com'),/NOT_STARTED/);
+  assert.equal(watchable(future),true);assert.ok(eventJob(future,'https://example.com'));
+  assert.equal(watchable({...future,status:'finished'}),false);
   const ranked=rank([{score:5},{score:10}]);assert.equal(ranked[0].recommended,true);assert.equal(ranked[1].recommended,false);
 });
 test('normalized schedules carry participants and real status',()=>{
@@ -116,7 +117,7 @@ test('custom source settings accept multiple newline-separated URLs in one add',
   ]);
 });
 
-test('custom source URLs become bounded wildcard discovery adapters',async()=>{
+test('custom source URLs become wildcard discovery adapters',async()=>{
   const sites=await customRegistry(['https://8.8.8.8/sports','https://8.8.8.8/sports']);
   assert.equal(sites.length,1);
   assert.equal(sites[0].custom,true);

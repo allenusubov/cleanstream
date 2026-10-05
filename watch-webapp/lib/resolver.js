@@ -2,7 +2,7 @@ import {chromium} from 'playwright';
 import crypto from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {safeURL, fetchLimited, AppError, WorkPool} from './network.js';
-const pool=new WorkPool(2,10,240);
+const pool=new WorkPool(2);
 let browserPromise=null, browserUsers=0;
 const cache=new Map(), inflight=new Map();
 const HLS=/\.m3u8(?:$|\?)/i;
@@ -152,7 +152,7 @@ export async function resolve(url,origin,{progress=false}={}) {
   if(inflight.has(key)) return inflight.get(key);
   const job=(async()=>{
     const extracted=await extract(url);
-    const results=await Promise.allSettled(extracted.slice(0,3).map(item=>validate(item,origin,{progress})));
+    const results=await Promise.allSettled(extracted.map(item=>validate(item,origin,{progress})));
     const candidates=results.filter(x=>x.status==='fulfilled').map(x=>({...x.value,id:crypto.createHash('sha256').update(x.value.mediaUrl).digest('hex').slice(0,16),sourceUrl:url}));
     if(!candidates.length) throw new AppError(extracted.length?'DIRECT_BLOCKED':'NO_MEDIA',422);
     const value={sourceUrl:url,candidates};

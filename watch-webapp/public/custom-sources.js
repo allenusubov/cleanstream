@@ -1,5 +1,5 @@
 export const CUSTOM_SOURCE_KEY='cleanstream.customSources.v1';
-const KNOWN_CATEGORIES=new Set(['NBA','WNBA','NFL','CFB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','TENNIS','RUGBY','CRICKET']);
+const KNOWN_CATEGORIES=new Set(['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET']);
 
 export function normalizeCustomSourceUrl(value) {
   const raw=String(value||'').trim();
@@ -17,19 +17,19 @@ function cleanProfile(item={}){
     for(const [rawKey,values] of Object.entries(item.categories)){
       const key=String(rawKey).toUpperCase();if(!KNOWN_CATEGORIES.has(key))continue;
       const list=[],seen=new Set();
-      for(const value of (Array.isArray(values)?values:[values]).slice(0,3))try{const url=normalizeProfileUrl(value);if(!seen.has(url)){seen.add(url);list.push(url);}}catch{}
+      for(const value of (Array.isArray(values)?values:[values]))try{const url=normalizeProfileUrl(value);if(!seen.has(url)){seen.add(url);list.push(url);}}catch{}
       if(list.length)categories[key]=list;
     }
   }
   const eventLists=[],seen=new Set();
-  for(const value of (Array.isArray(item.eventLists)?item.eventLists:[]).slice(0,6))try{const url=normalizeProfileUrl(value);if(!seen.has(url)){seen.add(url);eventLists.push(url);}}catch{}
+  for(const value of (Array.isArray(item.eventLists)?item.eventLists:[]))try{const url=normalizeProfileUrl(value);if(!seen.has(url)){seen.add(url);eventLists.push(url);}}catch{}
   return {categories,eventLists};
 }
 export function loadCustomSources(storage=globalThis.localStorage) {
   let parsed=[];try{parsed=JSON.parse(storage?.getItem(CUSTOM_SOURCE_KEY)||'[]');}catch{}
   if(!Array.isArray(parsed))return [];
   const seen=new Set(),out=[];
-  for(const item of parsed.slice(0,40)){
+  for(const item of parsed){
     try{
       const url=normalizeCustomSourceUrl(typeof item==='string'?item:item?.url);if(seen.has(url))continue;seen.add(url);
       const profile=cleanProfile(typeof item==='object'?item:{});
@@ -60,11 +60,11 @@ export function mergeCustomSourceProfile(url,profile,storage=globalThis.localSto
     const keys=new Set([...Object.keys(item.categories||{}),...Object.keys(learned.categories||{})]);
     for(const key of keys){
       const merged=[];
-      for(const value of [...(item.categories?.[key]||[]),...(learned.categories?.[key]||[])])if(!merged.includes(value)&&merged.length<3)merged.push(value);
+      for(const value of [...(item.categories?.[key]||[]),...(learned.categories?.[key]||[])])if(!merged.includes(value))merged.push(value);
       if(merged.length)categories[key]=merged;
     }
     const eventLists=[];
-    for(const value of [...(item.eventLists||[]),...(learned.eventLists||[])])if(!eventLists.includes(value)&&eventLists.length<6)eventLists.push(value);
+    for(const value of [...(item.eventLists||[]),...(learned.eventLists||[])])if(!eventLists.includes(value))eventLists.push(value);
     return {...item,categories,eventLists};
   }),storage);
 }
@@ -76,7 +76,7 @@ export function addCustomSources(value,storage=globalThis.localStorage) {
   const entries=Array.isArray(value)?value:splitCustomSourceInput(value);if(!entries.length)throw new Error('ENTER AT LEAST ONE SOURCE URL');
   const items=loadCustomSources(storage),byUrl=new Map(items.map(item=>[item.url,item]));let added=0,existing=0,invalid=0,limit=0;
   for(const entry of entries){let url;try{url=normalizeCustomSourceUrl(entry);}catch{invalid++;continue;}const saved=byUrl.get(url);
-    if(saved){saved.enabled=true;existing++;continue;}if(items.length>=40){limit++;continue;}const item={url,enabled:true,categories:{},eventLists:[]};items.push(item);byUrl.set(url,item);added++;}
+    if(saved){saved.enabled=true;existing++;continue;}const item={url,enabled:true,categories:{},eventLists:[]};items.push(item);byUrl.set(url,item);added++;}
   if(!added&&!existing&&invalid)throw new Error('ENTER VALID SOURCE URLS');
   return {items:saveCustomSources(items,storage),added,existing,invalid,limit};
 }
@@ -106,11 +106,11 @@ export function parseProfileLines(value,baseUrl=''){
       else url=normalizeProfileUrl(target);
     }catch{invalid++;continue;}
     if(label==='EVENT'||label==='EVENTS'||label==='LIVE'||label==='SCHEDULE'||label==='UPCOMING'||label==='GAMES'||label==='MATCHES'){
-      if(!eventLists.includes(url)&&eventLists.length<6)eventLists.push(url);continue;
+      if(!eventLists.includes(url))eventLists.push(url);continue;
     }
     if(!KNOWN_CATEGORIES.has(label)){invalid++;continue;}
     categories[label]??=[];
-    if(!categories[label].includes(url)&&categories[label].length<3)categories[label].push(url);
+    if(!categories[label].includes(url))categories[label].push(url);
   }
   return {categories,eventLists,invalid};
 }

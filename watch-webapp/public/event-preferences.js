@@ -1,5 +1,5 @@
 export const EVENT_PREFERENCES_KEY='cleanstream.eventPreferences.v1';
-export const EVENT_CATEGORIES=['NBA','WNBA','NFL','CFB','NHL','MLB','UFC','BOXING','SOCCER','F1','TENNIS'];
+export const EVENT_CATEGORIES=['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','NHL','MLB','UFC','MMA','BOXING','SOCCER','TENNIS','F1','NASCAR','INDYCAR','GOLF'];
 
 const normalize=value=>String(value||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 
@@ -8,10 +8,11 @@ export function eventCategory(event={}){
   const league=String(event.league||event.scheduleKey||'').toUpperCase();
   if(sport==='soccer'||['SOCCER','MLS','EPL','UCL'].includes(league))return 'SOCCER';
   if(sport==='tennis'||['ATP','WTA','TENNIS'].includes(league))return 'TENNIS';
-  if(['NBA','WNBA','NFL','CFB','NHL','MLB','UFC','BOXING','F1'].includes(league))return league;
-  if(sport==='mma')return 'UFC';
+  if(['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','NHL','MLB','UFC','MMA','BOXING','F1','NASCAR','INDYCAR','GOLF'].includes(league))return league;
+  if(sport==='mma')return league==='UFC'?'UFC':'MMA';
   if(sport==='boxing')return 'BOXING';
-  if(sport==='racing')return 'F1';
+  if(sport==='golf')return 'GOLF';
+  if(sport==='racing'){if(league.includes('NASCAR'))return 'NASCAR';if(league.includes('INDY'))return 'INDYCAR';return 'F1';}
   return league&&EVENT_CATEGORIES.includes(league)?league:null;
 }
 

@@ -4,9 +4,10 @@ import {withPage,visit} from './resolver.js';
 
 export const CATEGORY_ALIASES={
   NBA:['nba','basketball'], WNBA:['wnba','women basketball','basketball'], NFL:['nfl','american football','football'],
-  CFB:['cfb','college football','ncaa football'], UFC:['ufc','mma','fight'], MMA:['mma','ufc','fight'],
-  BOXING:['boxing','box'], NHL:['nhl','hockey'], MLB:['mlb','baseball'], SOCCER:['soccer','football'],
-  F1:['f1','formula 1','formula one','motorsport'], TENNIS:['tennis'], RUGBY:['rugby'], CRICKET:['cricket']
+  CFB:['cfb','college football','ncaa football'], NCAAB:['ncaab','ncaa basketball','college basketball'], WNCAAB:['wncaab','womens college basketball'],
+  UFC:['ufc','mma','fight'], MMA:['mma','ufc','fight'], BOXING:['boxing','box'], NHL:['nhl','hockey'], MLB:['mlb','baseball'], SOCCER:['soccer','football'],
+  F1:['f1','formula 1','formula one','motorsport'], NASCAR:['nascar'], INDYCAR:['indycar','indy car'], GOLF:['golf','pga','lpga'],
+  TENNIS:['tennis'], RUGBY:['rugby'], CRICKET:['cricket']
 };
 
 const EVENT_WORDS=['events','live','schedule','upcoming','matches','games','fixtures','calendar'];
@@ -67,9 +68,9 @@ export function profileFromLinks(links,base){
   const clean=dedupeLinks(links,base),categories={};
   for(const [key,aliases] of Object.entries(CATEGORY_ALIASES)){
     const ranked=clean.map(link=>({link,score:categoryScore(link,key,aliases)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score);
-    if(ranked.length)categories[key]=[...new Set(ranked.slice(0,2).map(x=>x.link.url))];
+    if(ranked.length)categories[key]=[...new Set(ranked.map(x=>x.link.url))];
   }
-  const eventLists=[...new Set(clean.map(link=>({link,score:eventScore(link)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score).slice(0,4).map(x=>x.link.url))];
+  const eventLists=[...new Set(clean.map(link=>({link,score:eventScore(link)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score).map(x=>x.link.url))];
   const hubs=clean.filter(link=>{
     const text=linkText(link);return HUB_WORDS.some(word=>wordHit(text,word));
   }).slice(0,6).map(link=>link.url);
@@ -114,9 +115,9 @@ function mergeProfiles(profiles){
   for(const profile of profiles){
     for(const [key,urls] of Object.entries(profile.categories||{})){
       categories[key]??=[];
-      for(const url of urls||[])if(!categories[key].includes(url)&&categories[key].length<3)categories[key].push(url);
+      for(const url of urls||[])if(!categories[key].includes(url))categories[key].push(url);
     }
-    for(const url of profile.eventLists||[])if(!eventLists.includes(url)&&eventLists.length<6)eventLists.push(url);
+    for(const url of profile.eventLists||[])if(!eventLists.includes(url))eventLists.push(url);
   }
   return {categories,eventLists};
 }

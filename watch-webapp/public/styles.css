@@ -207,9 +207,10 @@ a { text-decoration: none; }
   color: var(--muted);
   white-space: nowrap;
 }
-.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #707070; flex: none; }
+.live-dot { width:7px; height:7px; border-radius:50%; background:#ef3434; flex:none; display:inline-block; }
+.inline-live {display:inline-flex;align-items:center;gap:.35em;white-space:nowrap;}
+#live-button.has-live .live-dot,#live-button.is-live .live-dot {background:#ef3434;}
 #live-button.is-live { color: var(--fg); }
-#live-button.is-live .live-dot { background: #ef3434; }
 #live-button:not(:disabled):hover,
 #live-button:not(:disabled):focus-visible { color: var(--bg); }
 .text-action:disabled { color: var(--muted); cursor: default; }
@@ -304,6 +305,8 @@ a { text-decoration: none; }
   transition:color 100ms ease;
 }
 .ticker-event:hover,.ticker-event:focus-visible {color:var(--fg);outline:none;}
+.ticker-event .inline-live {color:inherit;}
+.ticker-event .live-dot {width:6px;height:6px;}
 .ticker-loading,.ticker-empty {color:#555;text-transform:uppercase;}
 #explore-button {font:inherit;letter-spacing:inherit;justify-self:end;}
 .has-results #live-ticker-row {display:none;}
@@ -336,7 +339,15 @@ a { text-decoration: none; }
 .event-heading {display:flex;justify-content:space-between;gap:24px;align-items:center;}
 .event-info {min-width:0;}
 .event-title {font-size:clamp(20px,2.5vw,34px);line-height:1.08;letter-spacing:-.045em;margin:0;text-transform:uppercase;overflow-wrap:anywhere;}
+.event-title-button {display:block;width:100%;font:inherit;line-height:inherit;letter-spacing:inherit;text-transform:inherit;text-align:left;cursor:pointer;color:inherit;padding:0;}
+.event-title-button:hover,.event-title-button:focus-visible {color:var(--fg);outline:none;text-decoration:underline;text-underline-offset:.13em;}
 .event-time,.event-state,.source-detail,.results-subtext {font-size:13px;color:#999;font-weight:600;line-height:1.5;letter-spacing:.015em;}
+.event-time .inline-live {color:var(--fg);}
+.results-title .inline-live {vertical-align:.08em;gap:.25em;}
+.results-title .live-dot {width:.18em;height:.18em;}
+.explore-event-row .event-state {white-space:nowrap;}
+.explore-event-row .source-list {padding-top:4px;}
+.explore-event-row.is-expanded {padding-bottom:29px;}
 .event-time {margin:10px 0 0;}
 .event-actions {display:flex;gap:28px;align-items:center;flex-shrink:0;}
 .event-state {max-width:180px;}
