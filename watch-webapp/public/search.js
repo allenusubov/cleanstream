@@ -1,4 +1,5 @@
 import {parseQuery} from './events.js';
+import {enabledCustomSourceUrls} from './custom-sources.js';
 const labels={CHECKING:'CHECKING SOURCES',READY:'SOURCES READY',NO_MATCHING_SOURCES:'NO MATCHING SOURCES',
   NO_WORKING_SOURCES:'NO WORKING SOURCES',SOURCES_UNAVAILABLE:'SOURCES UNAVAILABLE',BUSY:'TRY AGAIN SHORTLY',USAGE_LIMIT:'CHECK LIMIT REACHED'};
 const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text)node.textContent=text;return node;};
@@ -8,15 +9,22 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
   let generation=0,controllers=[],lastQuery='',latest=new Map();
   const stop=()=>{generation++;controllers.forEach(c=>c.abort());controllers=[];};
   const controller=()=>{const c=new AbortController();controllers.push(c);return c;};
+  const sourceRequest=(eventId,signal)=>fetch(`/api/events/${encodeURIComponent(eventId)}/sources`,{
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({customSources:enabledCustomSourceUrls()}),
+    signal
+  });
+
   async function sources(event,row,token) {
     const state=row.querySelector('.event-state'), list=row.querySelector('.source-list'), watch=row.querySelector('.event-watch');
     state.textContent='CHECKING SOURCES';watch.disabled=true;
     const signal=controller().signal;
     try {
-      let response=await fetch(`/api/events/${encodeURIComponent(event.id)}/sources`,{signal});
+      let response=await sourceRequest(event.id,signal);
       if(response.status===404) {
         await fetch(`/api/events?q=${encodeURIComponent(lastQuery)}`,{signal});
-        response=await fetch(`/api/events/${encodeURIComponent(event.id)}/sources`,{signal});
+        response=await sourceRequest(event.id,signal);
       }
       if(!response.ok) {const data=await response.json();throw new Error(labels[data.code]||'SOURCES UNAVAILABLE');}
       const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
@@ -114,7 +122,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
   }
   form.addEventListener('submit',event=>{event.preventDefault();search();});
   return {stop,search,reset(){stop();results.hidden=true;results.replaceChildren();document.querySelector('.home').classList.remove('has-results');},get query(){return lastQuery;},getSources:eventId=>latest.get(eventId)||[],async refreshSources(eventId,onUpdate,signal){
-    const response=await fetch(`/api/events/${encodeURIComponent(eventId)}/sources`,{signal});if(!response.ok)return [];
+    const response=await sourceRequest(eventId,signal);if(!response.ok)return [];
     const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',found=[];
     while(true){const {done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let end;
       while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;const data=JSON.parse(line);if(data.type==='update'){found=data.sources;latest.set(eventId,found);onUpdate?.(found);}}

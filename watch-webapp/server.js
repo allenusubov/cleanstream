@@ -8,7 +8,8 @@ import {youtubeId} from './public/youtube-url.js';
 import {resolveYouTube} from './lib/youtube.js';
 import {twitchChannel,twitchCandidate} from './public/twitch-url.js';
 import {eventJob} from './lib/discovery.js';
-import {AppError} from './lib/network.js';
+import {AppError,safeURL,fetchLimited} from './lib/network.js';
+import {customRegistry} from './lib/custom-sources.js';
 const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
 app.set('trust proxy',1);
@@ -51,10 +52,11 @@ app.post('/api/resolve',limit(8),async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
   res.json(await resolve(url,origin(req)));
 });
-app.get('/api/events/:id/sources',limit(30),(req,res)=>{
+async function streamEventSources(req,res){
   const event=knownEvents.get(req.params.id);
   if(!event) throw new AppError('EVENT_UNAVAILABLE',404);
-  const job=eventJob(event,origin(req));
+  const customSites=await customRegistry(req.body?.customSources||[]);
+  const job=eventJob(event,origin(req),customSites);
   res.setHeader('Content-Type','application/x-ndjson');
   res.setHeader('Cache-Control','no-store, no-transform');
   res.setHeader('X-Accel-Buffering','no');
@@ -68,6 +70,16 @@ app.get('/api/events/:id/sources',limit(30),(req,res)=>{
   const heartbeat=setInterval(()=>{if(!res.destroyed && !res.writableEnded) res.write('{"type":"ping"}\n');},10000);
   res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);});
   write(job.snapshot());job.start();
+}
+app.get('/api/events/:id/sources',limit(30),streamEventSources);
+app.post('/api/events/:id/sources',limit(30),streamEventSources);
+app.post('/api/source-test',limit(12),async(req,res)=>{
+  const raw=String(req.body?.url||'').trim();
+  const url=await safeURL(raw.includes('://')?raw:`https://${raw}`);
+  const response=await fetchLimited(url.href,{limit:65536,partial:true});
+  const finalUrl=await safeURL(response.url);
+  res.setHeader('Cache-Control','no-store');
+  res.json({ok:true,url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase()});
 });
 // Deliberately disabled: this app never relays video bytes to viewers or TVs.
 app.use('/api/media',(_req,res)=>res.status(410).json({code:'DIRECT_ONLY'}));

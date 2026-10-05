@@ -87,3 +87,27 @@ test('frozen HLS is rejected instead of called healthy',async()=>{
   try{await assert.rejects(validate({url:'https://8.8.8.8/frozen.m3u8',isHls:true},'https://example.com',{progress:true}),/SOURCE_FROZEN/);}
   finally{global.fetch=old;}
 });
+
+import {customRegistry} from '../lib/custom-sources.js';
+import {normalizeCustomSourceUrl,loadCustomSources,addCustomSource,setCustomSourceEnabled,removeCustomSource} from '../public/custom-sources.js';
+
+test('custom source settings normalize, persist, toggle and remove browser registry rows',()=>{
+  const data=new Map();
+  const storage={getItem:key=>data.get(key)||null,setItem:(key,value)=>data.set(key,value)};
+  assert.equal(normalizeCustomSourceUrl('example.com'),'https://example.com/');
+  addCustomSource('example.com',storage);
+  assert.deepEqual(loadCustomSources(storage),[{url:'https://example.com/',enabled:true}]);
+  setCustomSourceEnabled('https://example.com/',false,storage);
+  assert.equal(loadCustomSources(storage)[0].enabled,false);
+  removeCustomSource('https://example.com/',storage);
+  assert.equal(loadCustomSources(storage).length,0);
+});
+
+test('custom source URLs become bounded wildcard discovery adapters',async()=>{
+  const sites=await customRegistry(['https://8.8.8.8/sports','https://8.8.8.8/sports']);
+  assert.equal(sites.length,1);
+  assert.equal(sites[0].custom,true);
+  assert.deepEqual(sites[0].leagues,['*']);
+  assert.equal(sites[0].dynamic,true);
+  assert.equal(sites[0].indexUrls[0],'https://8.8.8.8/sports');
+});

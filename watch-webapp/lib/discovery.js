@@ -62,7 +62,11 @@ export function linkMatchesEvent(link,event) {
   try {
     const url=new URL(link.url);
     const slug=decodeURIComponent(`${url.pathname} ${url.search}`).replace(/[-_+]+/g,' ');
-    return matchesParticipants(`${link.text||''} ${slug}`,event.participants||[]);
+    const haystack=normalize(`${link.text||''} ${slug}`);
+    const participants=event.participants||[];
+    if(participants.length>=2)return matchesParticipants(haystack,participants);
+    const words=normalize(event.title||'').split(' ').filter(word=>word.length>=3);
+    return words.length>0 && words.filter(word=>haystack.includes(word)).length>=Math.min(2,words.length);
   } catch { return false; }
 }
 function likelyMirror(text,url,site) {
@@ -250,9 +254,10 @@ async function fastCandidates(target,origin) {
   const result=await resolve(target.url,origin,{progress:false});
   return result.candidates.filter(candidate=>candidate.live).map(candidate=>({...candidate,sourceUrl:target.url}));
 }
-export function eventJob(event,origin) {
+export function eventJob(event,origin,customSites=[]) {
   if(!watchable(event)) throw new AppError('NOT_STARTED',409);
-  const key=`${origin}|${event.id}`;
+  const customKey=idFor(customSites.map(site=>site.indexUrls?.[0]||site.id).sort().join('|'));
+  const key=`${origin}|${event.id}|${customKey}`;
   const old=jobs.get(key);
   if(old && (!old.done || old.expiresAt>Date.now())) return old;
   const job={sources:[],done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false};
@@ -261,7 +266,16 @@ export function eventJob(event,origin) {
   job.start=()=>{
     if(job.started) return;job.started=true;
     job.promise=pool.run(async()=>{
-      const sites=registry.filter(s=>s.enabled && (s.type==='streamed'||event.participants?.length>=2) && (s.leagues.includes('*')||s.leagues.includes(event.league))).slice(0,8);
+      const merged=[...customSites,...registry];
+      const byHost=new Map();
+      for(const site of merged){
+        if(!site?.enabled)continue;
+        const root=site.displayHost||site.indexUrls?.[0]||site.indexUrl||site.id;
+        let identity=String(root||site.id);
+        try{identity=new URL(identity).hostname.replace(/^www\./i,'');}catch{}
+        if(!byHost.has(identity))byHost.set(identity,site);
+      }
+      const sites=[...byHost.values()].filter(s=>(s.type==='streamed'||s.custom||event.participants?.length>=2) && (s.leagues.includes('*')||s.leagues.includes(event.league))).slice(0,24);
       let matched=0, unavailable=0;
       await Promise.allSettled(sites.map(async site=>{
         const statsKey=`${site.id}|${event.league}`;

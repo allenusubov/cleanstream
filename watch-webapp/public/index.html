@@ -8,7 +8,7 @@
   <title>Clean Stream</title>
   <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
   <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
-  <link rel="stylesheet" href="/styles.css?v=0.6.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.8.0" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -21,7 +21,10 @@
       <div class="home-spacer"></div>
 
       <section class="home-inputs" aria-label="Find a stream">
-        <form class="search-row" id="event-form">
+        <form class="search-row settings-search-row" id="event-form">
+          <button class="settings-trigger" id="settings-button" type="button" aria-label="Custom source settings" title="Custom source settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.1a3.9 3.9 0 1 0 0 7.8 3.9 3.9 0 0 0 0-7.8Zm8.3 4.9v-2l-2.2-.7a7 7 0 0 0-.6-1.5l1.1-2-1.4-1.4-2 1.1a7 7 0 0 0-1.5-.6L13 3.7h-2l-.7 2.2a7 7 0 0 0-1.5.6l-2-1.1-1.4 1.4 1.1 2a7 7 0 0 0-.6 1.5l-2.2.7v2l2.2.7c.1.5.3 1 .6 1.5l-1.1 2 1.4 1.4 2-1.1c.5.3 1 .5 1.5.6l.7 2.2h2l.7-2.2c.5-.1 1-.3 1.5-.6l2 1.1 1.4-1.4-1.1-2c.3-.5.5-1 .6-1.5l2.2-.7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+          </button>
           <input id="event-query" type="search" placeholder="FIND LIVE EVENT" aria-label="Find live event" autocomplete="off" maxlength="100" />
           <button class="text-action" id="search-button" type="submit">SEARCH</button>
         </form>
@@ -32,6 +35,26 @@
         <p class="message" id="home-message" aria-live="polite"></p>
       </section>
       <section id="search-results" class="search-results" aria-label="Event results" hidden></section>
+    </section>
+
+
+    <section class="settings view" data-view="settings" aria-hidden="true">
+      <header class="settings-header">
+        <div class="player-home-group">
+          <button class="text-action" id="settings-back" type="button" aria-label="Back">&lt;</button>
+          <a class="player-brand home-link" href="/">CLEAN STREAM</a>
+        </div>
+      </header>
+
+      <section class="settings-panel" aria-label="Custom sources">
+        <h1 class="settings-title">CUSTOM SOURCES</h1>
+        <form class="search-row settings-add-row" id="custom-source-form">
+          <input id="custom-source-url" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ADD SOURCE URL" aria-label="Add source URL" />
+          <button class="text-action" type="submit">ADD</button>
+        </form>
+        <p class="message settings-message" id="settings-message" aria-live="polite"></p>
+        <div class="custom-source-list" id="custom-source-list"></div>
+      </section>
     </section>
 
     <section class="player view" data-view="player" aria-hidden="true">
@@ -81,7 +104,7 @@
   </main>
 
   <script>window.__onGCastApiAvailable = value => { window.__castReady = value; };</script>
-  <script type="module" src="/app.js?v=0.6.0"></script>
+  <script type="module" src="/app.js?v=0.8.0"></script>
   <script async src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
 </html>

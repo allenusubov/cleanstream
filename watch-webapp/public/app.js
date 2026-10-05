@@ -2,9 +2,14 @@ import {initSearch} from './search.js';
 import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
+import {loadCustomSources,addCustomSource,setCustomSourceEnabled,removeCustomSource,customSourceDomain} from './custom-sources.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
 const playerView = $('[data-view="player"]');
+const settingsView = $('[data-view="settings"]');
+const settingsList = $('#custom-source-list');
+const settingsMessage = $('#settings-message');
+const customSourceInput = $('#custom-source-url');
 const streamInput = $('#stream-url');
 const homeMessage = $('#home-message');
 const sourceLink = $('#source-link');
@@ -144,9 +149,46 @@ async function recoverStream() {
 function showView(name) {
   homeView.classList.toggle('is-active', name === 'home');
   playerView.classList.toggle('is-active', name === 'player');
+  settingsView.classList.toggle('is-active', name === 'settings');
   homeView.setAttribute('aria-hidden', String(name !== 'home'));
   playerView.setAttribute('aria-hidden', String(name !== 'player'));
+  settingsView.setAttribute('aria-hidden', String(name !== 'settings'));
 }
+function renderSettingsSources() {
+  const items=loadCustomSources();
+  settingsList.replaceChildren();
+  if(!items.length){
+    const empty=document.createElement('div');empty.className='custom-source-empty';empty.textContent='NO CUSTOM SOURCES ADDED';settingsList.append(empty);return;
+  }
+  for(const item of items){
+    const row=document.createElement('div');row.className=`custom-source-row${item.enabled?'':' is-off'}`;
+    const copy=document.createElement('div');copy.className='custom-source-copy';
+    const domain=document.createElement('div');domain.className='custom-source-domain';domain.textContent=customSourceDomain(item.url);
+    const status=document.createElement('div');status.className='custom-source-status';status.textContent=item.enabled?'ENABLED':'DISABLED';
+    copy.append(domain,status);
+    const actions=document.createElement('div');actions.className='custom-source-actions';
+    const toggle=document.createElement('button');toggle.type='button';toggle.className='text-action';toggle.textContent=item.enabled?'ON':'OFF';
+    toggle.addEventListener('click',()=>{setCustomSourceEnabled(item.url,!item.enabled);renderSettingsSources();});
+    const test=document.createElement('button');test.type='button';test.className='text-action';test.textContent='TEST';
+    test.addEventListener('click',async()=>{
+      test.disabled=true;status.textContent='TESTING';
+      try{
+        const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:item.url})});
+        if(!response.ok)throw new Error();
+        const data=await response.json();status.textContent=`REACHABLE · ${data.host||customSourceDomain(item.url)}`;
+      }catch{status.textContent='UNAVAILABLE';}
+      finally{test.disabled=false;}
+    });
+    const remove=document.createElement('button');remove.type='button';remove.className='text-action';remove.textContent='REMOVE';
+    remove.addEventListener('click',()=>{removeCustomSource(item.url);renderSettingsSources();});
+    actions.append(toggle,test,remove);row.append(copy,actions);settingsList.append(row);
+  }
+}
+
+function openSettings() {
+  settingsMessage.textContent='';customSourceInput.value='';renderSettingsSources();showView('settings');navigate({view:'settings'});
+}
+
 function say(text = '') { message.textContent = text; }
 function placeholder(text) {
   emptyCopy.textContent = text;
@@ -515,6 +557,16 @@ tvButton.addEventListener('click', async () => {
   } finally { castLoadPromise = null; updateTVButton(); }
 });
 $('#link-form').addEventListener('submit', event => {event.preventDefault();openStream();});
+$('#settings-button').addEventListener('click', openSettings);
+$('#custom-source-form').addEventListener('submit',event=>{
+  event.preventDefault();settingsMessage.textContent='';
+  try{addCustomSource(customSourceInput.value);customSourceInput.value='';renderSettingsSources();settingsMessage.textContent='SOURCE ADDED';}
+  catch(error){settingsMessage.textContent=error.message||'ENTER A VALID SOURCE URL';customSourceInput.focus();}
+});
+$('#settings-back').addEventListener('click',()=>{
+  if(history.state?.cleanStream&&history.state.depth>0)history.back();
+  else {navigate({view:'home'},true);restoreRoute();}
+});
 refreshButton.addEventListener('click', refreshStream);
 $('#back-button').addEventListener('click', () => {
   if(history.state?.cleanStream && history.state.depth>0)history.back();
@@ -615,6 +667,7 @@ function leavePlayer() {
 function navigate(state,replace=false) {
   const url=new URL('/',location.origin);
   if(state.q)url.searchParams.set('q',state.q);
+  if(state.view==='settings')url.searchParams.set('settings','1');
   if(state.view==='player') {
     url.searchParams.set('watch',state.url);
     if(state.event)url.searchParams.set('event',state.event);
@@ -630,6 +683,9 @@ async function restoreRoute() {
   const params=new URL(location.href).searchParams;
   search.stop();leavePlayer();
   const q=params.get('q'),url=params.get('watch');
+  if(params.get('settings')==='1'){
+    settingsMessage.textContent='';renderSettingsSources();showView('settings');return;
+  }
   if(url) {
     streamInput.value=url;
     await openStream(false,params.has('live')?params.get('live')==='1':null);
