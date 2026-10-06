@@ -117,15 +117,17 @@ export function profileFromLinks(links,base){
   return {categories,eventLists,hubs,links:clean,support,structure:structureFromLinks(clean)};
 }
 async function pageLinks(url,{dynamic=true}={}){
-  let finalUrl=url,staticLinks=[],staticError=null;
+  let finalUrl=url,staticLinks=[],staticError=null,staticWorked=false;
   try{
-    const response=await fetchLimited(url,{limit:2*1024*1024});
-    finalUrl=response.url;
+    // Large homepages are common. Keep the first 2 MB instead of treating an
+    // oversized HTML document as an unavailable source.
+    const response=await fetchLimited(url,{limit:2*1024*1024,partial:true});
+    staticWorked=true;finalUrl=response.url;
     staticLinks=directoryLinks(response.body.toString(),response.url,[],1500);
   }catch(error){staticError=error;}
   const first=profileFromLinks(staticLinks,finalUrl);
   const useful=Object.keys(first.categories).length+first.eventLists.length;
-  if(!dynamic || useful>=3)return {url:finalUrl,links:staticLinks};
+  if(!dynamic || useful>=6)return {url:finalUrl,links:staticLinks,reachable:staticWorked,method:staticWorked?'STATIC':'NONE'};
   try{
     const dynamicLinks=await withPage(async page=>{
       await visit(page,url);
@@ -144,10 +146,10 @@ async function pageLinks(url,{dynamic=true}={}){
         }catch{return [];}
       }));
     });
-    return {url:finalUrl,links:dedupeLinks([...staticLinks,...dynamicLinks],finalUrl)};
+    return {url:finalUrl,links:dedupeLinks([...staticLinks,...dynamicLinks],finalUrl),reachable:true,method:staticWorked?'STATIC+DYNAMIC':'DYNAMIC'};
   }catch(error){
-    if(staticLinks.length)return {url:finalUrl,links:staticLinks};
-    throw staticError||error;
+    if(staticWorked)return {url:finalUrl,links:staticLinks,reachable:true,method:'STATIC'};
+    return {url:finalUrl,links:[],reachable:false,method:'NONE',error:staticError||error};
   }
 }
 function mergeProfiles(profiles){
@@ -166,22 +168,43 @@ function mergeProfiles(profiles){
   const routeStyle=styles.size===1?[...styles][0]:styles.size>1?'MIXED':'UNKNOWN';
   return {categories,eventLists,support,structure:{routeStyle,eventPrefixes:eventPrefixes.slice(0,12),eventHosts:eventHosts.slice(0,8)}};
 }
-export async function scanSourceProfile(input){
+export async function scanSourceProfile(input,hints={}){
   const root=await safeURL(input);
-  const firstPage=await pageLinks(root.href,{dynamic:true});
-  const first=profileFromLinks(firstPage.links,firstPage.url);
-  const profiles=[first];
-  // TEST may inspect a few obvious navigation hubs once. Search then reuses what
-  // was learned instead of rediscovering these paths for every live event.
-  if(Object.keys(first.categories).length<2){
-    for(const hub of first.hubs.slice(0,3)){
-      try{
-        await safeURL(hub);
-        const page=await pageLinks(hub,{dynamic:false});
-        profiles.push(profileFromLinks(page.links,page.url));
-      }catch{}
-    }
+  const seeds=[root.href];
+  const addSeed=async value=>{
+    if(seeds.length>=8||!value)return;
+    try{const url=(await safeURL(String(value))).href;if(!seeds.includes(url))seeds.push(url);}catch{}
+  };
+  // Re-test routes we already know. A homepage may be blocked or empty while a
+  // category/events route still works and can teach us more about the site.
+  for(const value of (Array.isArray(hints?.eventLists)?hints.eventLists:[]))await addSeed(value);
+  for(const urls of Object.values(hints?.categories&&typeof hints.categories==='object'?hints.categories:{})){
+    for(const value of (Array.isArray(urls)?urls:[urls])){await addSeed(value);if(seeds.length>=8)break;}
+    if(seeds.length>=8)break;
   }
+
+  const profiles=[];const hubs=[];let reachablePages=0,pagesChecked=0,finalUrl=root.href;
+  for(const seed of seeds){
+    const page=await pageLinks(seed,{dynamic:true});pagesChecked++;
+    if(!page.reachable)continue;
+    reachablePages++;if(seed===root.href)finalUrl=page.url||finalUrl;
+    const profile=profileFromLinks(page.links,page.url||seed);profiles.push(profile);
+    for(const hub of profile.hubs||[])if(!hubs.includes(hub))hubs.push(hub);
+  }
+
+  // Crawl a few discovered navigation hubs with cheap static requests. This is
+  // bounded so TEST ALL can learn structure without turning into a site crawl.
+  for(const hub of hubs.slice(0,4)){
+    if(pagesChecked>=12)break;
+    try{
+      const page=await pageLinks(hub,{dynamic:false});pagesChecked++;
+      if(!page.reachable)continue;reachablePages++;profiles.push(profileFromLinks(page.links,page.url||hub));
+    }catch{}
+  }
+
   const merged=mergeProfiles(profiles);
-  return {url:firstPage.url,categories:merged.categories,eventLists:merged.eventLists,support:merged.support,structure:merged.structure,testedAt:Date.now()};
+  const learned=Object.values(merged.categories||{}).reduce((n,urls)=>n+(urls?.length||0),0)+(merged.eventLists?.length||0);
+  const status=reachablePages===0?'UNREACHABLE':learned?'LEARNED':'PARTIAL';
+  return {url:finalUrl,categories:merged.categories,eventLists:merged.eventLists,support:merged.support,structure:merged.structure,
+    status,reachable:reachablePages>0,pagesChecked,reachablePages,testedAt:Date.now()};
 }

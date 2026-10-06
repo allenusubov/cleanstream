@@ -103,10 +103,12 @@ app.post('/api/explore-sources',async(req,res)=>{
 app.post('/api/source-test',async(req,res)=>{
   const raw=String(req.body?.url||'').trim();
   const url=await safeURL(raw.includes('://')?raw:`https://${raw}`);
-  const profile=await scanSourceProfile(url.href);
-  const finalUrl=await safeURL(profile.url);
+  const profile=await scanSourceProfile(url.href,req.body?.profile||{});
+  let finalUrl=url;try{finalUrl=await safeURL(profile.url||url.href);}catch{}
   res.setHeader('Cache-Control','no-store');
-  res.json({ok:true,url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase(),
+  res.json({ok:profile.status!=='UNREACHABLE',status:profile.status||'PARTIAL',reachable:Boolean(profile.reachable),
+    pagesChecked:Number(profile.pagesChecked)||0,reachablePages:Number(profile.reachablePages)||0,
+    url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase(),
     categories:profile.categories||{},eventLists:profile.eventLists||[],support:profile.support||{},structure:profile.structure||{},testedAt:profile.testedAt||Date.now()});
 });
 // Deliberately disabled: this app never relays video bytes to viewers or TVs.

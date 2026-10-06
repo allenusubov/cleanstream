@@ -444,7 +444,9 @@ function profileEditor(row,item) {
   row.append(editor);textarea.focus();
 }
 async function testCustomSourceProfile(item){
-  const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:item.url})});
+  const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+    url:item.url,profile:{categories:item.categories||{},eventLists:item.eventLists||[],support:item.support||{},structure:item.structure||{}}
+  })});
   if(!response.ok)throw new Error('SOURCE TEST FAILED');
   const data=await response.json();
   mergeCustomSourceProfile(item.url,{categories:data.categories||{},eventLists:data.eventLists||[],support:data.support||{},structure:data.structure||{},testedAt:data.testedAt||Date.now()});
@@ -453,17 +455,21 @@ async function testCustomSourceProfile(item){
 async function testAllCustomSources(){
   const items=loadCustomSources().filter(item=>item.enabled);
   if(!items.length){settingsMessage.textContent='NO ENABLED SOURCES';return;}
-  testAllSourcesButton.disabled=true;let index=0,ok=0,failed=0;
+  testAllSourcesButton.disabled=true;let index=0,done=0,learned=0,partial=0,unreachable=0,failed=0;
   settingsMessage.textContent=`TESTING 0 / ${items.length}`;
-  const workers=Array.from({length:Math.min(3,items.length)},async()=>{
+  const workers=Array.from({length:Math.min(4,items.length)},async()=>{
     while(true){
       const i=index++;if(i>=items.length)return;const item=items[i];
-      try{await testCustomSourceProfile(item);ok++;}catch{failed++;}
-      settingsMessage.textContent=`TESTING ${ok+failed} / ${items.length}`;
+      try{
+        const data=await testCustomSourceProfile(item);
+        if(data.status==='LEARNED')learned++;else if(data.status==='UNREACHABLE')unreachable++;else partial++;
+      }catch{failed++;}
+      done++;renderSettingsSources();settingsMessage.textContent=`TESTING ${done} / ${items.length}`;
     }
   });
   await Promise.all(workers);testAllSourcesButton.disabled=false;renderSettingsSources();
-  settingsMessage.textContent=`${ok} TESTED${failed?` · ${failed} UNAVAILABLE`:''}`;
+  const summary=[];if(learned)summary.push(`${learned} LEARNED`);if(partial)summary.push(`${partial} PARTIAL`);if(unreachable)summary.push(`${unreachable} UNREACHABLE`);if(failed)summary.push(`${failed} FAILED`);
+  settingsMessage.textContent=summary.join(' · ')||`${items.length} TESTED`;
 }
 function downloadSourceExport(){
   const blob=new Blob([JSON.stringify(exportCustomSourcesPayload(),null,2)],{type:'application/json'});
@@ -506,8 +512,11 @@ function renderSettingsSources() {
       test.disabled=true;status.textContent='SCANNING';
       try{
         const data=await testCustomSourceProfile(item);const count=Object.values(data.categories||{}).flat().length+(data.eventLists||[]).length;
-        settingsMessage.textContent=count?`${count} DISCOVERY LINK${count===1?'':'S'} SAVED`:'REACHABLE · CATEGORY SUPPORT UNKNOWN';renderSettingsSources();
-      }catch{status.textContent='UNAVAILABLE';}finally{test.disabled=false;}
+        if(data.status==='UNREACHABLE')settingsMessage.textContent='UNREACHABLE · EXISTING PROFILE KEPT';
+        else if(count)settingsMessage.textContent=`${count} DISCOVERY LINK${count===1?'':'S'} SAVED`;
+        else settingsMessage.textContent='REACHABLE · CATEGORY SUPPORT UNKNOWN';
+        renderSettingsSources();
+      }catch{status.textContent='TEST FAILED';}finally{test.disabled=false;}
     });
     const edit=document.createElement('button');edit.type='button';edit.className='text-action';edit.textContent='EDIT';edit.addEventListener('click',()=>profileEditor(row,item));
     const remove=document.createElement('button');remove.type='button';remove.className='text-action';remove.textContent='REMOVE';remove.addEventListener('click',()=>{removeCustomSource(item.url);renderSettingsSources();});
