@@ -1,5 +1,8 @@
 export const CUSTOM_SOURCE_KEY='cleanstream.customSources.v1';
-const KNOWN_CATEGORIES=new Set(['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET']);
+export const KNOWN_CATEGORIES=['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET'];
+const CATEGORY_SET=new Set(KNOWN_CATEGORIES);
+const SUPPORT_VALUES=new Set(['YES','NO','UNKNOWN']);
+
 export function likelyEventRoute(value){
   try{
     const url=new URL(value);
@@ -24,11 +27,32 @@ export function normalizeCustomSourceUrl(value) {
 }
 export function customSourceDomain(value) {try{return new URL(value).hostname.replace(/^www\./i,'').toUpperCase();}catch{return 'SOURCE';}}
 function normalizeProfileUrl(value){return normalizeCustomSourceUrl(value);}
+function cleanSupport(raw={},categories={}){
+  const support={};
+  for(const key of KNOWN_CATEGORIES){
+    const value=String(raw?.[key]||'').toUpperCase();
+    if((categories[key]||[]).length)support[key]='YES';
+    else if(SUPPORT_VALUES.has(value))support[key]=value;
+  }
+  return support;
+}
+function cleanStructure(raw={}){
+  const list=(value,max=12)=>[...new Set((Array.isArray(value)?value:[]).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,max);
+  const routeStyle=['PATH','HASH','QUERY','MIXED','UNKNOWN'].includes(String(raw.routeStyle||'').toUpperCase())?String(raw.routeStyle).toUpperCase():'UNKNOWN';
+  return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12)};
+}
+function cleanPerformance(raw={}){
+  const successes=Math.max(0,Math.min(10000,Number(raw.successes)||0));
+  const failures=Math.max(0,Math.min(10000,Number(raw.failures)||0));
+  const avgWatchMs=Math.max(0,Math.min(120000,Number(raw.avgWatchMs)||0));
+  const lastSuccessAt=Math.max(0,Number(raw.lastSuccessAt)||0);
+  return {successes,failures,avgWatchMs,lastSuccessAt};
+}
 function cleanProfile(item={}){
   const categories={};
   if(item.categories&&typeof item.categories==='object'){
     for(const [rawKey,values] of Object.entries(item.categories)){
-      const key=String(rawKey).toUpperCase();if(!KNOWN_CATEGORIES.has(key))continue;
+      const key=String(rawKey).toUpperCase();if(!CATEGORY_SET.has(key))continue;
       const list=[],seen=new Set();
       for(const value of (Array.isArray(values)?values:[values]))try{const url=normalizeProfileUrl(value);if(!likelyEventRoute(url)&&!seen.has(url)){seen.add(url);list.push(url);}}catch{}
       if(list.length)categories[key]=list;
@@ -36,7 +60,13 @@ function cleanProfile(item={}){
   }
   const eventLists=[],seen=new Set();
   for(const value of (Array.isArray(item.eventLists)?item.eventLists:[]))try{const url=normalizeProfileUrl(value);if(!likelyEventRoute(url)&&!seen.has(url)){seen.add(url);eventLists.push(url);}}catch{}
-  return {categories,eventLists};
+  return {
+    categories,eventLists,
+    support:cleanSupport(item.support,categories),
+    structure:cleanStructure(item.structure),
+    performance:cleanPerformance(item.performance),
+    testedAt:Math.max(0,Number(item.testedAt)||0)
+  };
 }
 export function loadCustomSources(storage=globalThis.localStorage) {
   let parsed=[];try{parsed=JSON.parse(storage?.getItem(CUSTOM_SOURCE_KEY)||'[]');}catch{}
@@ -57,13 +87,15 @@ export function saveCustomSources(items,storage=globalThis.localStorage) {
 }
 export function addCustomSource(value,storage=globalThis.localStorage) {
   const url=normalizeCustomSourceUrl(value),items=loadCustomSources(storage);const existing=items.find(item=>item.url===url);
-  if(existing){existing.enabled=true;return saveCustomSources(items,storage);}items.push({url,enabled:true,categories:{},eventLists:[]});return saveCustomSources(items,storage);
+  if(existing){existing.enabled=true;return saveCustomSources(items,storage);}items.push({url,enabled:true,...cleanProfile({})});return saveCustomSources(items,storage);
 }
 export function setCustomSourceEnabled(url,enabled,storage=globalThis.localStorage) {
   return saveCustomSources(loadCustomSources(storage).map(item=>item.url===url?{...item,enabled:Boolean(enabled)}:item),storage);
 }
 export function setCustomSourceProfile(url,profile,storage=globalThis.localStorage){
-  const normalized=cleanProfile(profile);return saveCustomSources(loadCustomSources(storage).map(item=>item.url===url?{...item,...normalized}:item),storage);
+  const normalized=cleanProfile(profile);return saveCustomSources(loadCustomSources(storage).map(item=>item.url===url?{
+    ...item,categories:normalized.categories,eventLists:normalized.eventLists,support:{...(item.support||{}),...(normalized.support||{})},performance:item.performance,structure:item.structure,testedAt:item.testedAt
+  }:item),storage);
 }
 export function mergeCustomSourceProfile(url,profile,storage=globalThis.localStorage){
   const learned=cleanProfile(profile);
@@ -78,7 +110,33 @@ export function mergeCustomSourceProfile(url,profile,storage=globalThis.localSto
     }
     const eventLists=[];
     for(const value of [...(item.eventLists||[]),...(learned.eventLists||[])])if(!eventLists.includes(value))eventLists.push(value);
-    return {...item,categories,eventLists};
+    const support={...(item.support||{})};
+    for(const key of KNOWN_CATEGORIES){
+      if((categories[key]||[]).length)support[key]='YES';
+      else if(learned.support?.[key])support[key]=learned.support[key];
+    }
+    const structure={
+      routeStyle:learned.structure?.routeStyle&&learned.structure.routeStyle!=='UNKNOWN'?learned.structure.routeStyle:item.structure?.routeStyle||'UNKNOWN',
+      eventPrefixes:[...new Set([...(item.structure?.eventPrefixes||[]),...(learned.structure?.eventPrefixes||[])])].slice(0,12),
+      eventHosts:[...new Set([...(item.structure?.eventHosts||[]),...(learned.structure?.eventHosts||[])])].slice(0,8),
+      mirrorLabels:[...new Set([...(item.structure?.mirrorLabels||[]),...(learned.structure?.mirrorLabels||[])])].slice(0,12),
+      playerHosts:[...new Set([...(item.structure?.playerHosts||[]),...(learned.structure?.playerHosts||[])])].slice(0,12)
+    };
+    return {...item,categories,eventLists,support,structure,testedAt:learned.testedAt||Date.now()};
+  }),storage);
+}
+export function recordCustomSourceSuccess(url,startupMs=0,details={},storage=globalThis.localStorage){
+  let normalized;try{normalized=normalizeCustomSourceUrl(url);}catch{return loadCustomSources(storage);}
+  return saveCustomSources(loadCustomSources(storage).map(item=>{
+    if(item.url!==normalized)return item;
+    const old=cleanPerformance(item.performance),successes=old.successes+1;
+    const sample=Math.max(0,Number(startupMs)||0);
+    const avgWatchMs=sample?Math.round(old.avgWatchMs?old.avgWatchMs*.75+sample*.25:sample):old.avgWatchMs;
+    const structure=cleanStructure(item.structure);const add=(key,value,max=12)=>{if(value&&!structure[key].includes(value))structure[key]=[value,...structure[key]].slice(0,max);};
+    try{const u=new URL(details.eventUrl||'');const parts=u.pathname.split('/').filter(Boolean);add('eventHosts',u.hostname.replace(/^www\./i,''),8);add('eventPrefixes',parts.length>1?'/'+parts.slice(0,-1).join('/')+'/':'/');}catch{}
+    try{const u=new URL(details.mediaUrl||'');add('playerHosts',u.hostname.replace(/^www\./i,''));}catch{}
+    const mirror=String(details.mirrorLabel||'').trim();if(mirror&&mirror!=='DEFAULT')add('mirrorLabels',mirror);
+    return {...item,performance:{...old,successes,avgWatchMs,lastSuccessAt:Date.now()},structure};
   }),storage);
 }
 export function removeCustomSource(url,storage=globalThis.localStorage) {return saveCustomSources(loadCustomSources(storage).filter(item=>item.url!==url),storage);}
@@ -89,7 +147,7 @@ export function addCustomSources(value,storage=globalThis.localStorage) {
   const entries=Array.isArray(value)?value:splitCustomSourceInput(value);if(!entries.length)throw new Error('ENTER AT LEAST ONE SOURCE URL');
   const items=loadCustomSources(storage),byUrl=new Map(items.map(item=>[item.url,item]));let added=0,existing=0,invalid=0,limit=0;
   for(const entry of entries){let url;try{url=normalizeCustomSourceUrl(entry);}catch{invalid++;continue;}const saved=byUrl.get(url);
-    if(saved){saved.enabled=true;existing++;continue;}const item={url,enabled:true,categories:{},eventLists:[]};items.push(item);byUrl.set(url,item);added++;}
+    if(saved){saved.enabled=true;existing++;continue;}const item={url,enabled:true,...cleanProfile({})};items.push(item);byUrl.set(url,item);added++;}
   if(!added&&!existing&&invalid)throw new Error('ENTER VALID SOURCE URLS');
   return {items:saveCustomSources(items,storage),added,existing,invalid,limit};
 }
@@ -104,13 +162,16 @@ export function profileLines(item){
   };
   const lines=[];
   for(const [key,urls] of Object.entries(item.categories||{}))for(const url of urls)lines.push(`${key} ${compact(url)}`);
+  for(const [key,state] of Object.entries(item.support||{}))if(state==='NO'&&!(item.categories?.[key]||[]).length)lines.push(`${key} NO`);
   for(const url of item.eventLists||[])lines.push(`EVENTS ${compact(url)}`);
   return lines.join('\n');
 }
 export function parseProfileLines(value,baseUrl=''){
-  const categories={},eventLists=[];let invalid=0;
+  const categories={},eventLists=[],support={};let invalid=0;
   for(const raw of String(value||'').split(/\r?\n/)){
     const line=raw.trim();if(!line)continue;
+    const supportMatch=line.match(/^(\S+)\s+(YES|NO|UNKNOWN)$/i);
+    if(supportMatch){const key=supportMatch[1].toUpperCase(),state=supportMatch[2].toUpperCase();if(!CATEGORY_SET.has(key)){invalid++;continue;}support[key]=state;continue;}
     const match=line.match(/^(\S+)\s+(\S+)$/i);if(!match){invalid++;continue;}
     let [,label,target]=match;label=label.toUpperCase();
     let url;
@@ -121,9 +182,34 @@ export function parseProfileLines(value,baseUrl=''){
     if(label==='EVENT'||label==='EVENTS'||label==='LIVE'||label==='SCHEDULE'||label==='UPCOMING'||label==='GAMES'||label==='MATCHES'){
       if(!eventLists.includes(url))eventLists.push(url);continue;
     }
-    if(!KNOWN_CATEGORIES.has(label)){invalid++;continue;}
+    if(!CATEGORY_SET.has(label)){invalid++;continue;}
     categories[label]??=[];
     if(!categories[label].includes(url))categories[label].push(url);
   }
-  return {categories,eventLists,invalid};
+  for(const key of Object.keys(categories))support[key]='YES';
+  return {categories,eventLists,support,invalid};
+}
+
+export function exportCustomSourcesPayload(storage=globalThis.localStorage){
+  return {version:1,exportedAt:new Date().toISOString(),sources:loadCustomSources(storage)};
+}
+export function importCustomSourcesPayload(payload,storage=globalThis.localStorage){
+  const incoming=Array.isArray(payload)?payload:Array.isArray(payload?.sources)?payload.sources:[];
+  const current=loadCustomSources(storage),byUrl=new Map(current.map(item=>[item.url,item]));let added=0,updated=0,invalid=0;
+  for(const raw of incoming){
+    try{
+      const url=normalizeCustomSourceUrl(typeof raw==='string'?raw:raw?.url);const profile=cleanProfile(typeof raw==='object'?raw:{});const old=byUrl.get(url);
+      if(old){byUrl.set(url,{...old,...profile,enabled:typeof raw==='object'?raw.enabled!==false:old.enabled,performance:profile.performance.successes?profile.performance:old.performance});updated++;}
+      else {byUrl.set(url,{url,enabled:typeof raw==='object'?raw.enabled!==false:true,...profile});added++;}
+    }catch{invalid++;}
+  }
+  const items=saveCustomSources([...byUrl.values()],storage);return {items,added,updated,invalid};
+}
+function bytesToBase64(bytes){let binary='';for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+function base64ToBytes(value){let text=String(value||'').replace(/-/g,'+').replace(/_/g,'/');while(text.length%4)text+='=';const binary=atob(text),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);return bytes;}
+export function encodeCustomSourcesShare(storage=globalThis.localStorage){return bytesToBase64(new TextEncoder().encode(JSON.stringify(exportCustomSourcesPayload(storage))));}
+export function decodeCustomSourcesShare(value){return JSON.parse(new TextDecoder().decode(base64ToBytes(value)));}
+export async function ensureDefaultCustomSources(storage=globalThis.localStorage,fetcher=globalThis.fetch){
+  if(loadCustomSources(storage).length||typeof fetcher!=='function')return loadCustomSources(storage);
+  try{const response=await fetcher('/default-custom-sources.json',{cache:'no-store'});if(!response.ok)return [];const data=await response.json();return importCustomSourcesPayload(data,storage).items;}catch{return [];}
 }

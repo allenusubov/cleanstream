@@ -1,5 +1,5 @@
 import {parseQuery} from './events.js';
-import {enabledCustomSources} from './custom-sources.js';
+import {enabledCustomSources,recordCustomSourceSuccess} from './custom-sources.js';
 import {eventCategory,EVENT_CATEGORIES} from './event-preferences.js';
 
 const labels={
@@ -22,7 +22,7 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
   const results=document.querySelector('#search-results'),home=document.querySelector('.home');
   const filterRow=document.querySelector('#explore-filter-row'),filters=document.querySelector('#explore-filters');
   let generation=0,controllers=[],lastQuery='',latest=new Map(),exploreEvents=[],selectedFilters=new Set(['ALL']);
-  const discoveryState=new Map();
+  const discoveryState=new Map(),recordedSuccesses=new Set();
 
   const stop=()=>{
     generation++;
@@ -87,6 +87,10 @@ export function initSearch(onWatch,onNavigate=()=>{}) {
         const update=data=>{
           if(token!==generation || data.type!=='update') return;
           const visible=(data.sources||[]).filter(playableSource);
+          for(const source of visible){
+            const key=`${event.id}|${source.sourceRoot||source.siteId||source.id}`;
+            if(source.sourceRoot&&!recordedSuccesses.has(key)){recordedSuccesses.add(key);recordCustomSourceSuccess(source.sourceRoot,source.startupMs||0,{eventUrl:source.sourceUrl,mediaUrl:source.mediaUrl,mirrorLabel:source.mirrorLabel});}
+          }
           latest.set(event.id,visible);
           writeSourceCache(event.id,visible,{done:Boolean(data.done),status:data.status||'CHECKING'});
           window.dispatchEvent(new CustomEvent('cleanstream:sources-updated',{detail:{eventId:event.id,sources:visible}}));

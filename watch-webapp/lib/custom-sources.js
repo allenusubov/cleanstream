@@ -29,8 +29,15 @@ export async function customRegistry(values=[]){
       }
     }
     const eventListUrls=await safeList(value&&typeof value==='object'?value.eventLists:[]);
+    const support={};
+    if(value&&typeof value==='object'&&value.support&&typeof value.support==='object'){
+      for(const [key,state] of Object.entries(value.support)){const clean=String(state||'').toUpperCase();if(['YES','NO','UNKNOWN'].includes(clean))support[String(key).toUpperCase()]=clean;}
+    }
+    const performance=value&&typeof value==='object'&&value.performance&&typeof value.performance==='object'?{
+      successes:Number(value.performance.successes)||0,failures:Number(value.performance.failures)||0,avgWatchMs:Number(value.performance.avgWatchMs)||0,lastSuccessAt:Number(value.performance.lastSuccessAt)||0
+    }:{successes:0,failures:0,avgWatchMs:0,lastSuccessAt:0};
     out.push({
-      id:`custom-${id}`,name:host.toUpperCase(),leagues:['*'],indexUrls:[normalized],eventListUrls,categories,
+      id:`custom-${id}`,name:host.toUpperCase(),leagues:['*'],indexUrls:[normalized],eventListUrls,categories,support,performance,structure:value?.structure||{},sourceRoot:normalized,
       // Custom profiles may point to public pages on other hosts. Every request is
       // still checked by safeURL before it can leave the server.
       allowedHosts:[],dynamic:true,enabled:true,custom:true,displayHost:host,maxMirrors:16

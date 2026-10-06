@@ -2,7 +2,7 @@ import {initSearch} from './search.js';
 import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
-import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,removeCustomSource,customSourceDomain,profileLines,parseProfileLines} from './custom-sources.js';
+import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,removeCustomSource,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
 import {loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents,compactEventTitle} from './event-preferences.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
@@ -32,6 +32,11 @@ const tvButton = $('#tv-button');
 const tickerTrack=$('#ticker-track');
 const liveTicker=$('#live-ticker');
 const exploreButton=$('#explore-button');
+const testAllSourcesButton=$('#test-all-sources');
+const importSourcesButton=$('#import-sources');
+const exportSourcesButton=$('#export-sources');
+const shareSourcesButton=$('#share-sources');
+const importSourcesFile=$('#import-sources-file');
 
 let hls = null;
 let candidate = null;
@@ -413,12 +418,17 @@ function renderSourceProfile(copy,item) {
   for(const url of item.eventLists||[])entries.push(['EVENTS',url]);
   for(const [label,url] of entries){
     const line=document.createElement('div');line.className='custom-source-profile-line';
-    const tag=document.createElement('span');tag.className='custom-source-profile-label';tag.textContent=label;
+    const tag=document.createElement('span');tag.className='custom-source-profile-label';tag.textContent=label==='EVENTS'?'EVENTS':`${label} · YES`;
     const link=document.createElement('a');link.className='custom-source-profile-link';link.href=url;link.target='_blank';link.rel='noopener noreferrer';
     try{const u=new URL(url);const tail=`${u.pathname}${u.search}${u.hash}`;link.textContent=`${u.hostname.replace(/^www\./i,'')}${tail==='/'?'':tail}`;}catch{link.textContent=url;}
     line.append(tag,link);profile.append(line);
   }
-  if(entries.length)copy.append(profile);
+  for(const [key,state] of Object.entries(item.support||{}))if(state==='NO'&&!(item.categories?.[key]||[]).length){
+    const line=document.createElement('div');line.className='custom-source-profile-line';
+    const tag=document.createElement('span');tag.className='custom-source-profile-label';tag.textContent=`${key} · NO`;
+    const value=document.createElement('span');value.className='custom-source-profile-link';value.textContent='NOT SERVED';line.append(tag,value);profile.append(line);
+  }
+  if(profile.childNodes.length)copy.append(profile);
 }
 function profileEditor(row,item) {
   const old=row.querySelector('.custom-source-editor');if(old){old.remove();return;}
@@ -428,11 +438,59 @@ function profileEditor(row,item) {
   const buttons=document.createElement('div');buttons.className='custom-source-editor-actions';
   const save=document.createElement('button');save.type='submit';save.className='text-action';save.textContent='SAVE';
   const cancel=document.createElement('button');cancel.type='button';cancel.className='text-action';cancel.textContent='CANCEL';cancel.addEventListener('click',()=>editor.remove());
-  const note=document.createElement('div');note.className='custom-source-editor-note';note.textContent='ONE MAPPING PER LINE · LABEL + URL, /PATH, ?QUERY OR #HASH';
+  const note=document.createElement('div');note.className='custom-source-editor-note';note.textContent='ONE PER LINE · CATEGORY + URL, OR CATEGORY + NO';
   buttons.append(save,cancel);editor.append(textarea,note,buttons);
   editor.addEventListener('submit',event=>{event.preventDefault();const parsed=parseProfileLines(textarea.value,item.url);setCustomSourceProfile(item.url,parsed);renderSettingsSources();if(parsed.invalid)settingsMessage.textContent=`${parsed.invalid} INVALID MAPPING${parsed.invalid===1?'':'S'} IGNORED`;});
   row.append(editor);textarea.focus();
 }
+async function testCustomSourceProfile(item){
+  const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:item.url})});
+  if(!response.ok)throw new Error('SOURCE TEST FAILED');
+  const data=await response.json();
+  mergeCustomSourceProfile(item.url,{categories:data.categories||{},eventLists:data.eventLists||[],support:data.support||{},structure:data.structure||{},testedAt:data.testedAt||Date.now()});
+  return data;
+}
+async function testAllCustomSources(){
+  const items=loadCustomSources().filter(item=>item.enabled);
+  if(!items.length){settingsMessage.textContent='NO ENABLED SOURCES';return;}
+  testAllSourcesButton.disabled=true;let index=0,ok=0,failed=0;
+  settingsMessage.textContent=`TESTING 0 / ${items.length}`;
+  const workers=Array.from({length:Math.min(3,items.length)},async()=>{
+    while(true){
+      const i=index++;if(i>=items.length)return;const item=items[i];
+      try{await testCustomSourceProfile(item);ok++;}catch{failed++;}
+      settingsMessage.textContent=`TESTING ${ok+failed} / ${items.length}`;
+    }
+  });
+  await Promise.all(workers);testAllSourcesButton.disabled=false;renderSettingsSources();
+  settingsMessage.textContent=`${ok} TESTED${failed?` · ${failed} UNAVAILABLE`:''}`;
+}
+function downloadSourceExport(){
+  const blob=new Blob([JSON.stringify(exportCustomSourcesPayload(),null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='cleanstream-sources.json';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),0);
+  settingsMessage.textContent='SOURCE EXPORT CREATED';
+}
+async function copyText(value){
+  try{await navigator.clipboard.writeText(value);return true;}catch{}
+  const area=document.createElement('textarea');area.value=value;area.style.position='fixed';area.style.opacity='0';document.body.append(area);area.select();let ok=false;try{ok=document.execCommand('copy');}catch{}area.remove();return ok;
+}
+async function shareCustomSources(){
+  const token=encodeCustomSourcesShare();const url=new URL(location.origin);url.hash=`sources=${token}`;
+  if(url.href.length>12000){settingsMessage.textContent='SOURCE LIST TOO LARGE FOR A SHARE LINK · USE EXPORT';return;}
+  settingsMessage.textContent=await copyText(url.href)?'SHARE LINK COPIED':'COPY FAILED · USE EXPORT';
+}
+function importSourcePayload(payload){
+  const result=importCustomSourcesPayload(payload);renderSettingsSources();settingsMessage.textContent=`${result.added} ADDED · ${result.updated} UPDATED${result.invalid?` · ${result.invalid} INVALID`:''}`;return result;
+}
+function importSharedSourcesFromHash(){
+  const match=location.hash.match(/^#sources=(.+)$/);if(!match)return false;
+  try{
+    const payload=decodeCustomSourcesShare(match[1]);
+    if(confirm('IMPORT CLEAN STREAM SOURCES?'))importCustomSourcesPayload(payload);
+  }catch{}
+  history.replaceState(history.state,'',location.pathname+location.search);return true;
+}
+
 function renderSettingsSources() {
   const items=loadCustomSources();settingsList.replaceChildren();
   if(!items.length){const empty=document.createElement('div');empty.className='custom-source-empty';empty.textContent='NO CUSTOM SOURCES ADDED';settingsList.append(empty);return;}
@@ -447,9 +505,8 @@ function renderSettingsSources() {
     test.addEventListener('click',async()=>{
       test.disabled=true;status.textContent='SCANNING';
       try{
-        const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:item.url})});if(!response.ok)throw new Error();
-        const data=await response.json();mergeCustomSourceProfile(item.url,{categories:data.categories||{},eventLists:data.eventLists||[]});
-        const count=Object.values(data.categories||{}).flat().length+(data.eventLists||[]).length;settingsMessage.textContent=count?`${count} DISCOVERY LINK${count===1?'':'S'} SAVED`:'REACHABLE · NO CATEGORY LINKS FOUND';renderSettingsSources();
+        const data=await testCustomSourceProfile(item);const count=Object.values(data.categories||{}).flat().length+(data.eventLists||[]).length;
+        settingsMessage.textContent=count?`${count} DISCOVERY LINK${count===1?'':'S'} SAVED`:'REACHABLE · CATEGORY SUPPORT UNKNOWN';renderSettingsSources();
       }catch{status.textContent='UNAVAILABLE';}finally{test.disabled=false;}
     });
     const edit=document.createElement('button');edit.type='button';edit.className='text-action';edit.textContent='EDIT';edit.addEventListener('click',()=>profileEditor(row,item));
@@ -465,6 +522,11 @@ function placeholder(text) {
   playerEmpty.classList.remove('is-hidden');
 }
 function castSession() { return castContext?.getCurrentSession() || null; }
+function stopCastForRouteExit(){
+  if(!castOwned||!castSession()||!castContext)return;
+  castOwned=false;
+  Promise.resolve(castContext.endCurrentSession(true)).catch(()=>{});
+}
 function casting() {
   return Boolean(castSession() && remotePlayer?.isMediaLoaded &&
     remotePlayer.mediaInfo?.customData?.cleanStreamOrigin === location.origin);
@@ -828,6 +890,15 @@ tvButton.addEventListener('click', async () => {
 });
 $('#link-form').addEventListener('submit', event => {event.preventDefault();openStream();});
 $('#settings-button').addEventListener('click', openSettings);
+testAllSourcesButton?.addEventListener('click',testAllCustomSources);
+exportSourcesButton?.addEventListener('click',downloadSourceExport);
+shareSourcesButton?.addEventListener('click',shareCustomSources);
+importSourcesButton?.addEventListener('click',()=>importSourcesFile?.click());
+importSourcesFile?.addEventListener('change',async()=>{
+  const file=importSourcesFile.files?.[0];if(!file)return;
+  try{importSourcePayload(JSON.parse(await file.text()));}catch{settingsMessage.textContent='INVALID SOURCE EXPORT';}
+  importSourcesFile.value='';
+});
 document.querySelectorAll('[data-open-settings]').forEach(button=>button.addEventListener('click',()=>openSettingsPage(button.dataset.openSettings)));
 favoritesForm.addEventListener('submit',event=>{event.preventDefault();const prefs=setEventFavorites(favoritesInput.value);favoritesInput.value=prefs.favorites.join('\n');preferencesMessage.textContent='FAVORITES SAVED';});
 $('#custom-source-form').addEventListener('submit',event=>{
@@ -947,6 +1018,7 @@ function leavePlayer() {
   destroyLocal();candidate=null;currentEvent=null;alternatives=[];sourceUrl='';setBusy(false);say();
 }
 function navigate(state,replace=false) {
+  if(new URL(location.href).searchParams.has('watch') && state.view!=='player')stopCastForRouteExit();
   const url=new URL('/',location.origin);
   if(state.q)url.searchParams.set('q',state.q);
   if(state.view==='settings')url.searchParams.set('settings',state.section||'menu');
@@ -965,6 +1037,7 @@ let routeGeneration=0;
 async function restoreRoute() {
   const token=++routeGeneration;
   const params=new URL(location.href).searchParams;
+  if(playerView.classList.contains('is-active')&&!params.has('watch'))stopCastForRouteExit();
   search.stop();leavePlayer();
   const q=params.get('q'),url=params.get('watch');
   if(params.has('settings')){
@@ -1005,8 +1078,13 @@ document.querySelectorAll('.home-link').forEach(link=>link.addEventListener('cli
 }));
 addEventListener('popstate',restoreRoute);
 if(!history.state?.cleanStream)history.replaceState({cleanStream:true,depth:0},'');
-restoreRoute();
-loadLiveWindow(false);
+async function bootstrap(){
+  importSharedSourcesFromHash();
+  await ensureDefaultCustomSources();
+  await restoreRoute();
+  loadLiveWindow(false);
+}
+bootstrap();
 setInterval(()=>{if(homeView.classList.contains('is-active')&&!homeView.classList.contains('has-results'))loadLiveWindow(true);},60000);
 
 function fitMasthead() {

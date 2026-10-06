@@ -98,7 +98,7 @@ test('custom source settings normalize, persist, toggle and remove browser regis
   const storage={getItem:key=>data.get(key)||null,setItem:(key,value)=>data.set(key,value)};
   assert.equal(normalizeCustomSourceUrl('example.com'),'https://example.com/');
   addCustomSource('example.com',storage);
-  assert.deepEqual(loadCustomSources(storage),[{url:'https://example.com/',enabled:true,categories:{},eventLists:[]}]);
+  const saved=loadCustomSources(storage);assert.equal(saved.length,1);assert.equal(saved[0].url,'https://example.com/');assert.equal(saved[0].enabled,true);assert.deepEqual(saved[0].categories,{});assert.deepEqual(saved[0].eventLists,[]);
   setCustomSourceEnabled('https://example.com/',false,storage);
   assert.equal(loadCustomSources(storage)[0].enabled,false);
   removeCustomSource('https://example.com/',storage);
@@ -111,10 +111,7 @@ test('custom source settings accept multiple newline-separated URLs in one add',
   const result=addCustomSources('example.com\nhttps://second.test/path\n\nexample.com',storage);
   assert.equal(result.added,2);
   assert.equal(result.existing,1);
-  assert.deepEqual(loadCustomSources(storage),[
-    {url:'https://example.com/',enabled:true,categories:{},eventLists:[]},
-    {url:'https://second.test/path',enabled:true,categories:{},eventLists:[]}
-  ]);
+  const saved=loadCustomSources(storage);assert.equal(saved.length,2);assert.deepEqual(saved.map(item=>item.url),['https://example.com/','https://second.test/path']);assert.ok(saved.every(item=>item.enabled));
 });
 
 test('custom source URLs become wildcard discovery adapters',async()=>{

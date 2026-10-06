@@ -76,6 +76,23 @@ function eventScore(link){
   if(/\/schedule\/?(?:$|\?)/i.test(link.url))score+=10;
   return score;
 }
+function structureFromLinks(links){
+  const eventLinks=(links||[]).filter(likelyEventPage);
+  const eventPrefixes=[],eventHosts=[];
+  for(const link of eventLinks){
+    try{
+      const u=new URL(link.url);eventHosts.push(u.hostname.replace(/^www\./i,''));
+      const parts=u.pathname.split('/').filter(Boolean);
+      if(parts.length>1)eventPrefixes.push('/'+parts.slice(0,-1).join('/')+'/');
+      else if(parts.length===1)eventPrefixes.push('/');
+    }catch{}
+  }
+  const styles=new Set();
+  for(const link of links||[]){try{const u=new URL(link.url);if(u.hash)styles.add('HASH');if(u.search)styles.add('QUERY');if(u.pathname&&u.pathname!=='/')styles.add('PATH');}catch{}}
+  const routeStyle=styles.size===1?[...styles][0]:styles.size>1?'MIXED':'UNKNOWN';
+  return {routeStyle,eventPrefixes:[...new Set(eventPrefixes)].slice(0,12),eventHosts:[...new Set(eventHosts)].slice(0,8)};
+}
+
 function dedupeLinks(links,base){
   const map=new Map();
   for(const link of links||[]){
@@ -96,7 +113,8 @@ export function profileFromLinks(links,base){
   const hubs=clean.filter(link=>{
     const text=linkText(link);return HUB_WORDS.some(word=>wordHit(text,word));
   }).slice(0,6).map(link=>link.url);
-  return {categories,eventLists,hubs,links:clean};
+  const support={};for(const key of Object.keys(CATEGORY_ALIASES))support[key]=(categories[key]||[]).length?'YES':'UNKNOWN';
+  return {categories,eventLists,hubs,links:clean,support,structure:structureFromLinks(clean)};
 }
 async function pageLinks(url,{dynamic=true}={}){
   let finalUrl=url,staticLinks=[],staticError=null;
@@ -133,15 +151,20 @@ async function pageLinks(url,{dynamic=true}={}){
   }
 }
 function mergeProfiles(profiles){
-  const categories={};const eventLists=[];
+  const categories={};const eventLists=[],eventPrefixes=[],eventHosts=[];const styles=new Set();
   for(const profile of profiles){
     for(const [key,urls] of Object.entries(profile.categories||{})){
       categories[key]??=[];
       for(const url of urls||[])if(!categories[key].includes(url))categories[key].push(url);
     }
     for(const url of profile.eventLists||[])if(!eventLists.includes(url))eventLists.push(url);
+    for(const value of profile.structure?.eventPrefixes||[])if(!eventPrefixes.includes(value))eventPrefixes.push(value);
+    for(const value of profile.structure?.eventHosts||[])if(!eventHosts.includes(value))eventHosts.push(value);
+    if(profile.structure?.routeStyle&&profile.structure.routeStyle!=='UNKNOWN')styles.add(profile.structure.routeStyle);
   }
-  return {categories,eventLists};
+  const support={};for(const key of Object.keys(CATEGORY_ALIASES))support[key]=(categories[key]||[]).length?'YES':'UNKNOWN';
+  const routeStyle=styles.size===1?[...styles][0]:styles.size>1?'MIXED':'UNKNOWN';
+  return {categories,eventLists,support,structure:{routeStyle,eventPrefixes:eventPrefixes.slice(0,12),eventHosts:eventHosts.slice(0,8)}};
 }
 export async function scanSourceProfile(input){
   const root=await safeURL(input);
@@ -160,5 +183,5 @@ export async function scanSourceProfile(input){
     }
   }
   const merged=mergeProfiles(profiles);
-  return {url:firstPage.url,categories:merged.categories,eventLists:merged.eventLists};
+  return {url:firstPage.url,categories:merged.categories,eventLists:merged.eventLists,support:merged.support,structure:merged.structure,testedAt:Date.now()};
 }

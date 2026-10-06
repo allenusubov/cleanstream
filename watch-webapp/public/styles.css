@@ -539,7 +539,7 @@ a { text-decoration: none; }
 
 /* v0.9 learned custom-source routes */
 .custom-source-profile {display:flex;flex-direction:column;gap:4px;margin-top:5px;min-width:0;}
-.custom-source-profile-line {display:grid;grid-template-columns:58px minmax(0,1fr);gap:10px;align-items:baseline;color:var(--muted);font-size:11px;font-weight:700;line-height:1.25;letter-spacing:.01em;min-width:0;}
+.custom-source-profile-line {display:grid;grid-template-columns:86px minmax(0,1fr);gap:10px;align-items:baseline;color:var(--muted);font-size:11px;font-weight:700;line-height:1.25;letter-spacing:.01em;min-width:0;}
 .custom-source-profile-label {white-space:nowrap;}
 .custom-source-profile-link {color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .custom-source-profile-link:hover,.custom-source-profile-link:focus-visible {color:var(--fg);outline:none;}
@@ -550,7 +550,7 @@ a { text-decoration: none; }
 .custom-source-editor-actions {display:flex;gap:16px;font-size:12px;font-weight:700;}
 .custom-source-editor-actions .text-action {font-size:inherit;}
 @media(max-width:720px){
-  .custom-source-profile-line {grid-template-columns:52px minmax(0,1fr);font-size:10px;}
+  .custom-source-profile-line {grid-template-columns:78px minmax(0,1fr);font-size:10px;}
   .custom-source-actions {flex-wrap:wrap;justify-content:flex-end;}
   .custom-source-editor {grid-template-columns:1fr;}
   .custom-source-editor textarea,.custom-source-editor-note,.custom-source-editor-actions {grid-column:1;}
@@ -587,4 +587,15 @@ a { text-decoration: none; }
   .preference-name {font-size:19px;}
   .favorites-form {grid-template-columns:1fr;gap:12px;}
   .favorites-form .text-action {justify-self:end;margin-bottom:0;}
+}
+
+/* v0.17 custom-source transfer and bulk tools */
+.settings-title-row{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin:0 0 clamp(40px,7vh,90px);}
+.settings-title-row .settings-title{margin:0;}
+.settings-source-tools{display:flex;align-items:center;justify-content:flex-end;gap:clamp(10px,1.5vw,22px);flex-wrap:wrap;font-size:12px;font-weight:700;}
+.settings-source-tools .text-action{font-size:inherit;}
+@media(max-width:720px){
+  .settings-title-row{align-items:flex-start;flex-direction:column;margin-bottom:38px;}
+  .settings-title-row .settings-title{margin:0;}
+  .settings-source-tools{justify-content:flex-start;gap:12px 16px;}
 }

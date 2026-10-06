@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import {setTimeout as delay} from 'node:timers/promises';
 import {normalize,matchesParticipants} from '../public/events.js';
 import {withPage,visit,resolve,validate,quickValidate} from './resolver.js';
 import {AppError,WorkPool,fetchLimited} from './network.js';
@@ -145,6 +146,15 @@ export async function categoryPages(site,event,{light=false}={}) {
   return [...new Set(found)];
 }
 
+function structurePriority(site,link){
+  try{
+    const url=new URL(link.url);let score=0;
+    for(const prefix of site?.structure?.eventPrefixes||[])if(prefix==='/'||url.pathname.startsWith(prefix))score+=12;
+    for(const host of site?.structure?.eventHosts||[])if(url.hostname===host||url.hostname.endsWith(`.${host}`))score+=8;
+    return score;
+  }catch{return 0;}
+}
+
 async function genericPages(site,event,{light=false}={}) {
   const roots=rootsFor(site,event);
   const categories=await categoryPages(site,event,{light});
@@ -155,7 +165,8 @@ async function genericPages(site,event,{light=false}={}) {
   for(const indexUrl of urls) {
     try {
       const links=await readIndex(site,indexUrl,event);
-      for(const link of links) if(linkMatchesEvent(link,event)) {
+      const ordered=[...links].sort((a,b)=>structurePriority(site,b)-structurePriority(site,a));
+      for(const link of ordered) if(linkMatchesEvent(link,event)) {
         found.push(link);
         routeHistory.set(routeKey,indexUrl);
         if(light)return [link];
@@ -217,7 +228,7 @@ export async function mirrorTargets(site,page,event,{light=false}={}) {
           text:(node.getAttribute('aria-label')||node.textContent||node.value||'').replace(/\s+/g,' ').trim()
         }))).catch(()=>[]);
         const historyKey=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
-        const preferred=mirrorHistory.get(historyKey)||new Set();
+        const preferred=new Set([...(site.structure?.mirrorLabels||[]),...(mirrorHistory.get(historyKey)||[])]);
         const candidates=items.filter(item=>likelyMirror(item.text,item.href,site)).sort((a,b)=>Number(preferred.has(b.text))-Number(preferred.has(a.text)));
         for(const item of candidates) {
           if(item.href) {
@@ -288,25 +299,39 @@ function siteStats(site,event){
   const key=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
   return [key,history.get(key)||{success:0,attempts:0,totalMs:0}];
 }
+export function sourceSupportState(site,event){
+  const keys=[String(event?.league||'').toUpperCase(),String(event?.sport||'').toUpperCase()].filter(Boolean);
+  for(const key of keys){
+    if((site?.categories?.[key]||[]).length)return 'YES';
+    const state=String(site?.support?.[key]||'').toUpperCase();if(['YES','NO','UNKNOWN'].includes(state))return state;
+  }
+  return 'UNKNOWN';
+}
 function sitePriority(site,event){
   const [,stats]=siteStats(site,event);
-  if(!stats.attempts)return 0;
-  const reliability=stats.success/stats.attempts;
-  const avg=stats.success?stats.totalMs/stats.success:15000;
-  return reliability*100-Math.min(avg/250,40);
+  const persisted=site?.performance||{};
+  const attempts=stats.attempts+(Number(persisted.successes)||0)+(Number(persisted.failures)||0);
+  const success=stats.success+(Number(persisted.successes)||0);
+  const avgNow=stats.success?stats.totalMs/stats.success:0;
+  const avgSaved=Number(persisted.avgWatchMs)||0;
+  const avg=avgNow&&avgSaved?(avgNow+avgSaved)/2:(avgNow||avgSaved||15000);
+  const reliability=attempts?success/attempts:0;
+  const support=sourceSupportState(site,event)==='YES'?45:0;
+  const recent=Number(persisted.lastSuccessAt)&&Date.now()-Number(persisted.lastSuccessAt)<7*86400000?8:0;
+  return support+recent+reliability*100-Math.min(avg/250,40);
 }
 function pendingSource(site,target,event,score=25){
   const stableId=idFor(`${event.id}|${site.id}|${target.kind||'page'}|${target.url}`);
   return {
     id:stableId,siteId:site.id,name:site.name,displayName:displayName(site,target.parentUrl||target.url),score,eventId:event.id,
-    pending:true,deepVerified:false,mirrorLabel:target.text||'',sourceUrl:target.kind==='page'?target.url:(target.parentUrl||target.url)
+    pending:true,deepVerified:false,mirrorLabel:target.text||'',sourceRoot:site.sourceRoot||site.indexUrls?.[0]||'',sourceUrl:target.kind==='page'?target.url:(target.parentUrl||target.url)
   };
 }
 export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
   if(!watchable(event)) throw new AppError('EVENT_UNAVAILABLE',409);
   const light=mode==='light';
   const customKey=idFor(customSites.map(site=>JSON.stringify({
-    root:site.indexUrls?.[0]||site.id,categories:site.categories||{},eventListUrls:site.eventListUrls||[]
+    root:site.indexUrls?.[0]||site.id,categories:site.categories||{},eventListUrls:site.eventListUrls||[],support:site.support||{},structure:site.structure||{}
   })).sort().join('|'));
   const baseKey=`${origin}|${event.id}|${customKey}`;
   const key=`${baseKey}|${light?'light':'deep'}`;
@@ -340,10 +365,13 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
         if(!byHost.has(identity))byHost.set(identity,site);
       }
       const sites=[...byHost.values()]
-        .filter(site=>(site.type==='streamed'||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event))
-        .sort((a,b)=>sitePriority(b,event)-sitePriority(a,event));
+        .filter(site=>(site.type==='streamed'||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event)&&sourceSupportState(site,event)!=='NO')
+        .sort((a,b)=>{
+          const ar=sourceSupportState(a,event)==='YES'?1:0,br=sourceSupportState(b,event)==='YES'?1:0;
+          return br-ar||sitePriority(b,event)-sitePriority(a,event);
+        });
       let matched=0,unavailable=0;
-      await Promise.allSettled(sites.map(async site=>{
+      const checkSite=async site=>{
         const [statsKey,stats]=siteStats(site,event);
         const mirrorKey=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
         const resolveTarget=async target=>{
@@ -354,52 +382,46 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
             if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
             stats.success++;stats.totalMs+=candidates[0]?.startupMs||0;
             const reliability=stats.success/stats.attempts;
-            const actives=[];
             for(const [index,media] of candidates.entries()){
               const score=100+reliability*20-Math.min((media.startupMs||0)/1000,25)+Math.min((media.quality||0)/1080,1)*5-index*.25;
               const id=index===0?pending.id:idFor(`${pending.id}|${media.mediaUrl}|${index}`);
               const active=upsert({...pending,...media,id,pending:false,unavailable:false,score,deepVerified:!media.isHls,verifiedAt:media.verifiedAt});
-              actives.push(active);
               if(!light && !media.provisional && media.isHls && media.live && !active.deepVerified){
-                // Deep progression validation improves ranking but never blocks the source from appearing or being watchable.
                 validate({url:media.mediaUrl,isHls:true},origin,{progress:true}).then(deep=>{
                   Object.assign(active,{segmentDuration:deep.segmentDuration,quality:deep.quality||active.quality,deepVerified:true,verifiedAt:deep.verifiedAt,expiresAt:deep.expiresAt,score:active.score+4});
                   job.publish();
-                }).catch(()=>{
-                  // Keep the fast-pass source visible. A later playback failure can mark it unavailable.
-                });
+                }).catch(()=>{});
               }
             }
-            if(target.text) {
-              const remembered=mirrorHistory.get(mirrorKey)||new Set();remembered.add(target.text);mirrorHistory.set(mirrorKey,remembered);
-            }
-          }catch{/* Hidden candidate failed before it became watchable. */}
+            if(target.text){const remembered=mirrorHistory.get(mirrorKey)||new Set();remembered.add(target.text);mirrorHistory.set(mirrorKey,remembered);}
+          }catch{}
         };
         try{
           const pages=site.events?.[event.id]?[{url:site.events[event.id],text:event.title}]:site.type==='streamed'?await streamedPages(event):await genericPages(site,event,{light});
           const uniquePages=[...new Map(pages.map(page=>[page.url,page])).values()];
           const pagesToCheck=light?uniquePages.slice(0,1):uniquePages;
-          matched+=pagesToCheck.length;
-          if(!pagesToCheck.length)return;
-
-          // Resolve the default event page immediately. Mirror discovery runs beside it,
-          // so one slow mirror list never delays the first usable source.
-          const defaultTasks=[];
-          const mirrorTasks=[];
+          matched+=pagesToCheck.length;if(!pagesToCheck.length)return;
+          const defaultTasks=[],mirrorTasks=[];
           for(const page of pagesToCheck){
             const baseTarget={kind:'page',url:page.url,text:'DEFAULT',parentUrl:page.url};
             defaultTasks.push(resolveTarget(baseTarget));
             if(!light)mirrorTasks.push((async()=>{
               const targets=await mirrorTargets(site,page,event,{light:false});
-              const unique=[...new Map(targets.map(target=>[targetKey(target),{...target,parentUrl:page.url}])).values()]
-                .filter(target=>target.url!==page.url || target.kind!=='page');
+              const unique=[...new Map(targets.map(target=>[targetKey(target),{...target,parentUrl:page.url}])).values()].filter(target=>target.url!==page.url||target.kind!=='page');
               await Promise.allSettled(unique.map(resolveTarget));
             })());
           }
           await Promise.allSettled([...defaultTasks,...mirrorTasks]);
         }catch{unavailable++;}
         finally{history.set(statsKey,stats);}
-      }));
+      };
+      const known=sites.filter(site=>sourceSupportState(site,event)==='YES');
+      const fallback=sites.filter(site=>sourceSupportState(site,event)!=='YES');
+      const primary=known.slice(0,6);
+      const secondary=[...known.slice(6),...fallback];
+      const primaryWork=Promise.allSettled(primary.map(checkSite));
+      const secondaryWork=(async()=>{if(primary.length)await delay(550);return Promise.allSettled(secondary.map(checkSite));})();
+      await Promise.allSettled([primaryWork,secondaryWork]);
       const ready=job.sources.filter(source=>source.mediaUrl&&!source.unavailable).length;
       job.status=ready?'READY':unavailable===sites.length&&sites.length?'SOURCES_UNAVAILABLE':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
     }).catch(error=>{job.status=error.code||'SOURCES_UNAVAILABLE';}).finally(()=>{

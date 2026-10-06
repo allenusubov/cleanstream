@@ -146,7 +146,7 @@ export async function getLiveWindow(hours=24,now=Date.now()){
   const unique=new Map();
   for(const event of events){
     const start=Date.parse(event.startTime);
-    const inWindow=event.status==='live'||(event.status!=='finished'&&start>=now&&start<=to);
+    const inWindow=event.status==='live'||(event.status!=='finished'&&start>=now-6*3600000&&start<=to);
     if(!inWindow)continue;
     const signature=`${normalize(event.title)}|${Math.round(start/60000)}`;
     if(!unique.has(signature))unique.set(signature,event);

@@ -107,7 +107,7 @@ app.post('/api/source-test',async(req,res)=>{
   const finalUrl=await safeURL(profile.url);
   res.setHeader('Cache-Control','no-store');
   res.json({ok:true,url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase(),
-    categories:profile.categories||{},eventLists:profile.eventLists||[]});
+    categories:profile.categories||{},eventLists:profile.eventLists||[],support:profile.support||{},structure:profile.structure||{},testedAt:profile.testedAt||Date.now()});
 });
 // Deliberately disabled: this app never relays video bytes to viewers or TVs.
 app.use('/api/media',(_req,res)=>res.status(410).json({code:'DIRECT_ONLY'}));
