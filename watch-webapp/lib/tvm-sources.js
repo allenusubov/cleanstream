@@ -229,10 +229,10 @@ function rank(sources){
   let recommended=false;return [...sources].sort((a,b)=>(b.score||0)-(a.score||0)||(a.startupMs||99999)-(b.startupMs||99999)).map(source=>{const next={...source,recommended:!recommended};if(!recommended)recommended=true;return next;});
 }
 
-export function tvmSourceJob(item,origin,customSites=[]){
+export function tvmSourceJob(item,origin,customSites=[],{mode='deep'}={}){
   if(!item||!['tv','movie'].includes(item.kind)||!Number(item.tmdbId))throw new AppError('TVM_ITEM_UNAVAILABLE',400);
   const contentKey=keyFor(item),customKey=idFor(customSites.map(site=>JSON.stringify({id:site.id,support:site.support,categories:site.categories,structure:site.structure})).sort().join('|'));
-  const key=`${origin}|${contentKey}|${customKey}`;const old=jobs.get(key);if(old&&(!old.done||old.expiresAt>Date.now()))return old;
+  const key=`${origin}|${contentKey}|${customKey}|${mode}`;const old=jobs.get(key);if(old&&(!old.done||old.expiresAt>Date.now()))return old;
   const job={sources:[],done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false};
   job.snapshot=()=>({type:'update',eventId:item.id||contentKey,sources:rank(job.sources),done:job.done,status:job.status});
   job.publish=()=>{for(const listener of job.listeners)listener(job.snapshot());};
@@ -240,7 +240,9 @@ export function tvmSourceJob(item,origin,customSites=[]){
   job.start=()=>{
     if(job.started)return;job.started=true;
     job.promise=pool.run(async()=>{
-      const sites=[...customSites].filter(site=>site?.enabled&&supportState(site,item)!=='NO').sort((a,b)=>Number(supportState(b,item)==='YES')-Number(supportState(a,item)==='YES'));
+      // A manual/deep check must actually try every enabled source. A saved NO can
+      // be stale or incorrectly learned, so use it only to prune non-deep checks.
+      const sites=[...customSites].filter(site=>site?.enabled&&(mode==='deep'||supportState(site,item)!=='NO')).sort((a,b)=>Number(supportState(b,item)==='YES')-Number(supportState(a,item)==='YES'));
       let matched=0;
       const checkSite=async site=>{
         const discovery=await candidatePages(site,item).catch(()=>({pages:[],learned:{}}));const pages=discovery.pages||[];if(!pages.length)return;matched+=pages.length;
@@ -265,9 +267,9 @@ export function tvmSourceJob(item,origin,customSites=[]){
           if(job.sources.some(source=>source.siteId===site.id))return;
         }
       };
-      const known=sites.filter(site=>supportState(site,item)==='YES'),fallback=sites.filter(site=>supportState(site,item)!=='YES');
-      await Promise.allSettled(known.slice(0,5).map(checkSite));
-      if(!job.sources.length)await Promise.allSettled(fallback.slice(0,8).map(checkSite));
+      // Check every applicable custom TV/movie source. Results stream to the UI
+      // as each site succeeds instead of stopping after the first known source.
+      await Promise.allSettled(sites.slice(0,12).map(checkSite));
       job.status=job.sources.length?'READY':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
     }).catch(()=>{job.status='SOURCES_UNAVAILABLE';}).finally(()=>{job.done=true;job.expiresAt=Date.now()+(job.sources.length?60000:30000);job.publish();});
   };

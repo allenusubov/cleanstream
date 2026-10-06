@@ -122,7 +122,7 @@ app.post('/api/explore-sources',async(req,res)=>{
 app.post('/api/tvm/sources',async(req,res)=>{
   const item=req.body?.item;
   const customSites=await customRegistry(req.body?.customSources||[]);
-  const job=tvmSourceJob(item,origin(req),customSites);
+  const job=tvmSourceJob(item,origin(req),customSites,{mode:req.body?.mode||'deep'});
   res.setHeader('Content-Type','application/x-ndjson');
   res.setHeader('Cache-Control','no-store, no-transform');
   res.setHeader('X-Accel-Buffering','no');

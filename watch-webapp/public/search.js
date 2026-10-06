@@ -75,7 +75,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
   }
   async function sources(item,row,token,{mode='deep'}={}) {
     const existing=discoveryState.get(item.id);if(existing?.running)return existing.promise;
-    const state={running:true,done:false,promise:null};discoveryState.set(item.id,state);updateAction(item,row);
+    const state={running:true,done:false,status:'CHECKING',promise:null};discoveryState.set(item.id,state);updateAction(item,row);
     const signal=controller().signal;
     state.promise=(async()=>{
       try {
@@ -83,11 +83,11 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
         if(!isTvm(item)&&response.status===404){await fetch(`/api/events?q=${encodeURIComponent(lastQuery||item.title)}`,{signal});response=await sourceRequest(item,signal,mode);}
         const result=await consumeStream(response,item,(visible,data)=>{
           if(token!==generation)return;if(row.classList.contains('is-expanded'))renderSources(item,row,visible);
-          state.done=Boolean(data.done);state.running=!data.done;updateAction(item,row,{done:data.done,status:data.status});
+          state.done=Boolean(data.done);state.running=!data.done;state.status=data.status||state.status;updateAction(item,row,{done:data.done,status:state.status});
         });
-        state.done=result.done;
-      } catch(error) {if(!signal.aborted&&token===generation){state.running=false;state.done=true;updateAction(item,row,{done:true,status:error.message||'SOURCES_UNAVAILABLE'});}}
-      finally {state.running=false;if(token===generation)updateAction(item,row,{done:state.done,status:'NO_WORKING_SOURCES'});}
+        state.done=result.done;state.status=result.status||state.status;
+      } catch(error) {if(!signal.aborted&&token===generation){state.running=false;state.done=true;state.status=error.message||'SOURCES_UNAVAILABLE';updateAction(item,row,{done:true,status:state.status});}}
+      finally {state.running=false;if(token===generation)updateAction(item,row,{done:state.done,status:state.status});}
     })();return state.promise;
   }
 
@@ -115,7 +115,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
     titleButton.addEventListener('click',expandAndCheck);
     action.addEventListener('click',()=>{const playable=bestPlayable(item.id);if(playable){onWatch(playable,latest.get(item.id)||[],item);return;}if(!['youtube','twitch'].includes(item.provider))sources(item,article,token,{mode:'deep'});});
     if(['youtube','twitch'].includes(item.provider)){latest.set(item.id,item.sources||[]);if(expanded)renderSources(item,article,item.sources||[]);updateAction(item,article,{done:true,status:item.sources?.length?'READY':'NO_WORKING_SOURCES'});}
-    else {updateAction(item,article);if(expanded)renderSources(item,article,latest.get(item.id)||[]);if(auto){article.classList.add('is-expanded');titleButton.setAttribute('aria-expanded','true');list.hidden=false;if(!bestPlayable(item.id))sources(item,article,token,{mode:'deep'});}}
+    else {updateAction(item,article);if(expanded)renderSources(item,article,latest.get(item.id)||[]);if(auto&&!bestPlayable(item.id))sources(item,article,token,{mode:'deep'});}
     return article;
   }
 
@@ -123,7 +123,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
     stop();const token=++generation;latest=new Map();lastQuery=q||title;results.hidden=false;results.replaceChildren();home.classList.add('has-results');setExploreMode(exploreMode);
     const heading=element('h2',`results-title${exploreMode?' is-explore-title':''}`);if(exploreMode)heading.append(element('span','results-title-part','LIVE'),element('span','results-title-part','/'),element('span','results-title-part','UPCOMING'));else heading.textContent=title;results.append(heading);return token;
   }
-  function showEvent(event) {if(!event)return;input.value='';const token=beginCustomResults(`${String(event.title||'EVENT').toUpperCase()} EVENT:`,event.title||'',false);results.append(row(event,token,{auto:true,expanded:true}));}
+  function showEvent(event) {if(!event)return;input.value='';const token=beginCustomResults(`${String(event.title||'EVENT').toUpperCase()} EVENT:`,event.title||'',false);results.append(row(event,token,{auto:false,expanded:true}));}
 
   function catalogTvRow(show){
     const article=element('article','event-row catalog-row'),heading=element('div','event-heading'),info=element('div','event-info');
@@ -162,7 +162,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
       if(totalTypes===1){if(liveEvents.length)title.textContent=`${q.toUpperCase()} EVENTS:`;else if(tv.length)title.textContent=`${q.toUpperCase()} TV:`;else title.textContent=`${q.toUpperCase()} MOVIES:`;}
       const notices={SCHEDULE_UNAVAILABLE:'PART OF THE LIVE SCHEDULE IS TEMPORARILY UNAVAILABLE.',TMDB_NOT_CONFIGURED:'TV / MOVIE SEARCH NEEDS THE TMDB TOKEN TO BE ADDED TO THE SERVER.',TMDB_UNAVAILABLE:'TV / MOVIE CATALOG IS TEMPORARILY UNAVAILABLE.'};
       for(const notice of [...new Set([...(data.notices||[]),...(live.notices||[])])])if(notices[notice])results.append(element('p','results-subtext',notices[notice]));
-      if(liveEvents.length){if(totalTypes>1)results.append(sectionLabel('LIVE'));const single=totalTypes===1&&liveEvents.length===1;for(const item of liveEvents.slice(0,12))results.append(row(item,token,{auto:single&&!['youtube','twitch'].includes(item.provider),expanded:single}));}
+      if(liveEvents.length){if(totalTypes>1)results.append(sectionLabel('LIVE'));const single=totalTypes===1&&liveEvents.length===1;for(const item of liveEvents.slice(0,12))results.append(row(item,token,{auto:false,expanded:single}));}
       if(tv.length){if(totalTypes>1)results.append(sectionLabel('TV'));for(const show of tv)results.append(catalogTvRow(show));}
       if(movies.length){if(totalTypes>1)results.append(sectionLabel('MOVIES'));for(const movie of movies)results.append(row(movie,token,{auto:false,expanded:false}));}
       if(!liveEvents.length&&!tv.length&&!movies.length){results.append(element('p','results-message','NO RESULTS FOUND'));const parsed=parseQuery(q);if(live.complete&&parsed.kind==='matchup')results.append(element('p','results-subtext',`${parsed.teams.map(t=>t.name.toUpperCase()).join(' AND ')} ARE NOT CURRENTLY SCHEDULED TO PLAY IN THE AVAILABLE SCHEDULE.`));}
