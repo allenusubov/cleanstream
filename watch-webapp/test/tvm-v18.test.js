@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addCustomSource,loadCustomSources,setCustomSourceProfile,parseProfileLines,KNOWN_CATEGORIES
+  addCustomSource,loadCustomSources,setCustomSourceProfile,parseProfileLines,recordCustomSourceSuccess,KNOWN_CATEGORIES
 } from '../public/custom-sources.js';
 import {profileFromLinks} from '../lib/source-profile.js';
 import {tmdbSearchQuery,normalizeMovie,normalizeTv,normalizeEpisode} from '../lib/tmdb.js';
@@ -44,4 +44,19 @@ test('TMDB helpers normalize show, movie, season, episode metadata',()=>{
   assert.equal(movie.title,'Heat');assert.equal(movie.year,1995);assert.equal(movie.kind,'movie');
   const episode=normalizeEpisode(show,1,{episode_number:1,name:'Pilot',air_date:'2008-01-20'});
   assert.equal(episode.seasonNumber,1);assert.equal(episode.episodeNumber,1);assert.equal(episode.airDate,'2008-01-20');assert.match(episode.title,/PILOT/);
+});
+
+
+test('TVM source learning persists browser search and reusable episode templates',()=>{
+  const s=storage();addCustomSource('example.com',s);
+  recordCustomSourceSuccess('https://example.com/',320,{structure:{browserSearch:true,searchTemplates:['https://example.com/search?q={query}'],episodeTemplates:['https://example.com/show/{title}-season-{season}-episode-{episode}/']}},s);
+  const item=loadCustomSources(s)[0];
+  assert.equal(item.structure.browserSearch,true);
+  assert.equal(item.structure.searchTemplates[0],'https://example.com/search?q={query}');
+  assert.equal(item.structure.episodeTemplates[0],'https://example.com/show/{title}-season-{season}-episode-{episode}/');
+});
+
+test('site learning can remember a browser search UI even without a reusable GET route',()=>{
+  const profile=profileFromLinks([{url:'https://example.com/tv',text:'TV Shows'}],'https://example.com/',[],true);
+  assert.equal(profile.structure.browserSearch,true);
 });

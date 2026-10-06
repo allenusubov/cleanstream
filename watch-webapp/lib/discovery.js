@@ -245,6 +245,28 @@ export async function mirrorTargets(site,page,event,{light=false}={}) {
             for(const [url,target] of media)if(!before.has(url))addTarget(targets,{...target,text:item.text||'MIRROR'},page.url);
           } catch { /* A broken mirror control must not block other mirrors. */ }
         }
+
+        // Some players expose alternate servers in a <select> instead of links
+        // or buttons. Treat only source/server/player-like selects as mirrors.
+        const selects=browserPage.locator('select');
+        const selectData=await selects.evaluateAll(nodes=>nodes.slice(0,20).map((node,index)=>({
+          index,
+          label:`${node.getAttribute('aria-label')||''} ${node.name||''} ${node.id||''}`.trim(),
+          options:[...node.options].slice(0,30).map((option,optionIndex)=>({optionIndex,value:option.value||'',text:(option.textContent||'').replace(/\s+/g,' ').trim(),disabled:Boolean(option.disabled)}))
+        }))).catch(()=>[]);
+        for(const select of selectData){
+          const sourceLike=/\b(source|server|mirror|player|stream|video|feed)\b/i.test(select.label);
+          const options=select.options.filter(option=>!option.disabled&&option.text&&option.optionIndex>0&&(sourceLike||likelyMirror(option.text,option.value,site))).slice(0,18);
+          for(const option of options){
+            try{
+              const before=new Set(media.keys());
+              await selects.nth(select.index).selectOption({index:option.optionIndex},{timeout:1000});
+              await browserPage.waitForTimeout(Number(site.mirrorSettleMs)||250);
+              await collect(option.text||`SOURCE ${option.optionIndex+1}`);
+              for(const [url,target] of media)if(!before.has(url))addTarget(targets,{...target,text:option.text||target.text},page.url);
+            }catch{/* One bad option must not block the rest. */}
+          }
+        }
       });
     } catch { /* The event page itself can still be resolved as the default mirror. */ }
     const result=[...targets.values()];

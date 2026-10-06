@@ -39,7 +39,7 @@ function cleanSupport(raw={},categories={}){
 function cleanStructure(raw={}){
   const list=(value,max=12)=>[...new Set((Array.isArray(value)?value:[]).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,max);
   const routeStyle=['PATH','HASH','QUERY','MIXED','UNKNOWN'].includes(String(raw.routeStyle||'').toUpperCase())?String(raw.routeStyle).toUpperCase():'UNKNOWN';
-  return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12),searchTemplates:list(raw.searchTemplates,8)};
+  return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12),searchTemplates:list(raw.searchTemplates,8),episodeTemplates:list(raw.episodeTemplates,8),titleTemplates:list(raw.titleTemplates,8),browserSearch:Boolean(raw.browserSearch)};
 }
 function cleanTest(raw={}){
   const status=['LEARNED','PARTIAL','UNREACHABLE','FAILED'].includes(String(raw.status||'').toUpperCase())?String(raw.status).toUpperCase():'';
@@ -129,7 +129,10 @@ export function mergeCustomSourceProfile(url,profile,storage=globalThis.localSto
       eventHosts:[...new Set([...(item.structure?.eventHosts||[]),...(learned.structure?.eventHosts||[])])].slice(0,8),
       mirrorLabels:[...new Set([...(item.structure?.mirrorLabels||[]),...(learned.structure?.mirrorLabels||[])])].slice(0,12),
       playerHosts:[...new Set([...(item.structure?.playerHosts||[]),...(learned.structure?.playerHosts||[])])].slice(0,12),
-      searchTemplates:[...new Set([...(item.structure?.searchTemplates||[]),...(learned.structure?.searchTemplates||[])])].slice(0,8)
+      searchTemplates:[...new Set([...(item.structure?.searchTemplates||[]),...(learned.structure?.searchTemplates||[])])].slice(0,8),
+      episodeTemplates:[...new Set([...(item.structure?.episodeTemplates||[]),...(learned.structure?.episodeTemplates||[])])].slice(0,8),
+      titleTemplates:[...new Set([...(item.structure?.titleTemplates||[]),...(learned.structure?.titleTemplates||[])])].slice(0,8),
+      browserSearch:Boolean(item.structure?.browserSearch||learned.structure?.browserSearch)
     };
     const test=learned.test?.status?learned.test:item.test||cleanTest({});
     return {...item,categories,eventLists,support,structure,test,testedAt:learned.testedAt||Date.now()};
@@ -146,6 +149,11 @@ export function recordCustomSourceSuccess(url,startupMs=0,details={},storage=glo
     try{const u=new URL(details.eventUrl||'');const parts=u.pathname.split('/').filter(Boolean);add('eventHosts',u.hostname.replace(/^www\./i,''),8);add('eventPrefixes',parts.length>1?'/'+parts.slice(0,-1).join('/')+'/':'/');}catch{}
     try{const u=new URL(details.mediaUrl||'');add('playerHosts',u.hostname.replace(/^www\./i,''));}catch{}
     const mirror=String(details.mirrorLabel||'').trim();if(mirror&&mirror!=='DEFAULT')add('mirrorLabels',mirror);
+    const learned=cleanStructure(details.structure||{});
+    for(const value of learned.searchTemplates)add('searchTemplates',value,8);
+    for(const value of learned.episodeTemplates)add('episodeTemplates',value,8);
+    for(const value of learned.titleTemplates)add('titleTemplates',value,8);
+    if(learned.browserSearch)structure.browserSearch=true;
     return {...item,performance:{...old,successes,avgWatchMs,lastSuccessAt:Date.now()},structure};
   }),storage);
 }
@@ -175,14 +183,17 @@ export function profileLines(item){
   for(const [key,state] of Object.entries(item.support||{}))if(state==='NO'&&!(item.categories?.[key]||[]).length)lines.push(`${key} NO`);
   for(const url of item.eventLists||[])lines.push(`EVENTS ${compact(url)}`);
   for(const url of item.structure?.searchTemplates||[])lines.push(`SEARCH ${compact(url)}`);
+  for(const url of item.structure?.episodeTemplates||[])lines.push(`EPISODE ${compact(url)}`);
+  for(const url of item.structure?.titleTemplates||[])lines.push(`TITLE ${compact(url)}`);
+  if(item.structure?.browserSearch)lines.push('SEARCHUI YES');
   return lines.join('\n');
 }
 export function parseProfileLines(value,baseUrl=''){
-  const categories={},eventLists=[],support={},structure={searchTemplates:[]};let invalid=0;
+  const categories={},eventLists=[],support={},structure={searchTemplates:[],episodeTemplates:[],titleTemplates:[],browserSearch:false};let invalid=0;
   for(const raw of String(value||'').split(/\r?\n/)){
     const line=raw.trim();if(!line)continue;
     const supportMatch=line.match(/^(\S+)\s+(YES|NO|UNKNOWN)$/i);
-    if(supportMatch){const key=supportMatch[1].toUpperCase(),state=supportMatch[2].toUpperCase();if(!CATEGORY_SET.has(key)){invalid++;continue;}support[key]=state;continue;}
+    if(supportMatch){const key=supportMatch[1].toUpperCase(),state=supportMatch[2].toUpperCase();if(key==='SEARCHUI'){structure.browserSearch=state==='YES';continue;}if(!CATEGORY_SET.has(key)){invalid++;continue;}support[key]=state;continue;}
     const match=line.match(/^(\S+)\s+(\S+)$/i);if(!match){invalid++;continue;}
     let [,label,target]=match;label=label.toUpperCase();
     let url;
@@ -194,6 +205,8 @@ export function parseProfileLines(value,baseUrl=''){
       if(!eventLists.includes(url))eventLists.push(url);continue;
     }
     if(label==='SEARCH'){if(!structure.searchTemplates.includes(url))structure.searchTemplates.push(url);continue;}
+    if(label==='EPISODE'){if(!structure.episodeTemplates.includes(url))structure.episodeTemplates.push(url);continue;}
+    if(label==='TITLE'){if(!structure.titleTemplates.includes(url))structure.titleTemplates.push(url);continue;}
     if(!CATEGORY_SET.has(label)){invalid++;continue;}
     categories[label]??=[];
     if(!categories[label].includes(url))categories[label].push(url);

@@ -57,7 +57,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
   }
   function recordSuccess(item,source){
     const key=`${item.id}|${source.sourceRoot||source.siteId||source.id}`;
-    if(source.sourceRoot&&!recordedSuccesses.has(key)){recordedSuccesses.add(key);recordCustomSourceSuccess(source.sourceRoot,source.startupMs||0,{eventUrl:source.sourceUrl,mediaUrl:source.mediaUrl,mirrorLabel:source.mirrorLabel});}
+    if(source.sourceRoot&&!recordedSuccesses.has(key)){recordedSuccesses.add(key);recordCustomSourceSuccess(source.sourceRoot,source.startupMs||0,{eventUrl:source.sourceUrl,mediaUrl:source.mediaUrl,mirrorLabel:source.mirrorLabel,structure:source.learnedStructure||{}});}
   }
   async function consumeStream(response,item,onUpdate=()=>{}){
     if(!response.ok)throw new Error('SOURCES UNAVAILABLE');
