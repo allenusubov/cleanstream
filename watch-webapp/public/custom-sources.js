@@ -1,5 +1,5 @@
 export const CUSTOM_SOURCE_KEY='cleanstream.customSources.v1';
-export const KNOWN_CATEGORIES=['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET'];
+export const KNOWN_CATEGORIES=['TV','MOVIES','NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET'];
 const CATEGORY_SET=new Set(KNOWN_CATEGORIES);
 const SUPPORT_VALUES=new Set(['YES','NO','UNKNOWN']);
 
@@ -39,7 +39,11 @@ function cleanSupport(raw={},categories={}){
 function cleanStructure(raw={}){
   const list=(value,max=12)=>[...new Set((Array.isArray(value)?value:[]).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,max);
   const routeStyle=['PATH','HASH','QUERY','MIXED','UNKNOWN'].includes(String(raw.routeStyle||'').toUpperCase())?String(raw.routeStyle).toUpperCase():'UNKNOWN';
-  return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12)};
+  return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12),searchTemplates:list(raw.searchTemplates,8)};
+}
+function cleanTest(raw={}){
+  const status=['LEARNED','PARTIAL','UNREACHABLE','FAILED'].includes(String(raw.status||'').toUpperCase())?String(raw.status).toUpperCase():'';
+  return {status,reason:String(raw.reason||'').slice(0,180),testedAt:Math.max(0,Number(raw.testedAt)||0)};
 }
 function cleanPerformance(raw={}){
   const successes=Math.max(0,Math.min(10000,Number(raw.successes)||0));
@@ -65,6 +69,7 @@ function cleanProfile(item={}){
     support:cleanSupport(item.support,categories),
     structure:cleanStructure(item.structure),
     performance:cleanPerformance(item.performance),
+    test:cleanTest(item.test),
     testedAt:Math.max(0,Number(item.testedAt)||0)
   };
 }
@@ -93,9 +98,12 @@ export function setCustomSourceEnabled(url,enabled,storage=globalThis.localStora
   return saveCustomSources(loadCustomSources(storage).map(item=>item.url===url?{...item,enabled:Boolean(enabled)}:item),storage);
 }
 export function setCustomSourceProfile(url,profile,storage=globalThis.localStorage){
-  const normalized=cleanProfile(profile);return saveCustomSources(loadCustomSources(storage).map(item=>item.url===url?{
-    ...item,categories:normalized.categories,eventLists:normalized.eventLists,support:{...(item.support||{}),...(normalized.support||{})},performance:item.performance,structure:item.structure,testedAt:item.testedAt
-  }:item),storage);
+  const normalized=cleanProfile(profile);return saveCustomSources(loadCustomSources(storage).map(item=>{
+    if(item.url!==url)return item;
+    const structure={...(item.structure||{})};
+    if(profile?.structure&&Object.prototype.hasOwnProperty.call(profile.structure,'searchTemplates'))structure.searchTemplates=normalized.structure.searchTemplates;
+    return {...item,categories:normalized.categories,eventLists:normalized.eventLists,support:{...(item.support||{}),...(normalized.support||{})},performance:item.performance,structure,test:item.test,testedAt:item.testedAt};
+  }),storage);
 }
 export function mergeCustomSourceProfile(url,profile,storage=globalThis.localStorage){
   const learned=cleanProfile(profile);
@@ -120,9 +128,11 @@ export function mergeCustomSourceProfile(url,profile,storage=globalThis.localSto
       eventPrefixes:[...new Set([...(item.structure?.eventPrefixes||[]),...(learned.structure?.eventPrefixes||[])])].slice(0,12),
       eventHosts:[...new Set([...(item.structure?.eventHosts||[]),...(learned.structure?.eventHosts||[])])].slice(0,8),
       mirrorLabels:[...new Set([...(item.structure?.mirrorLabels||[]),...(learned.structure?.mirrorLabels||[])])].slice(0,12),
-      playerHosts:[...new Set([...(item.structure?.playerHosts||[]),...(learned.structure?.playerHosts||[])])].slice(0,12)
+      playerHosts:[...new Set([...(item.structure?.playerHosts||[]),...(learned.structure?.playerHosts||[])])].slice(0,12),
+      searchTemplates:[...new Set([...(item.structure?.searchTemplates||[]),...(learned.structure?.searchTemplates||[])])].slice(0,8)
     };
-    return {...item,categories,eventLists,support,structure,testedAt:learned.testedAt||Date.now()};
+    const test=learned.test?.status?learned.test:item.test||cleanTest({});
+    return {...item,categories,eventLists,support,structure,test,testedAt:learned.testedAt||Date.now()};
   }),storage);
 }
 export function recordCustomSourceSuccess(url,startupMs=0,details={},storage=globalThis.localStorage){
@@ -164,10 +174,11 @@ export function profileLines(item){
   for(const [key,urls] of Object.entries(item.categories||{}))for(const url of urls)lines.push(`${key} ${compact(url)}`);
   for(const [key,state] of Object.entries(item.support||{}))if(state==='NO'&&!(item.categories?.[key]||[]).length)lines.push(`${key} NO`);
   for(const url of item.eventLists||[])lines.push(`EVENTS ${compact(url)}`);
+  for(const url of item.structure?.searchTemplates||[])lines.push(`SEARCH ${compact(url)}`);
   return lines.join('\n');
 }
 export function parseProfileLines(value,baseUrl=''){
-  const categories={},eventLists=[],support={};let invalid=0;
+  const categories={},eventLists=[],support={},structure={searchTemplates:[]};let invalid=0;
   for(const raw of String(value||'').split(/\r?\n/)){
     const line=raw.trim();if(!line)continue;
     const supportMatch=line.match(/^(\S+)\s+(YES|NO|UNKNOWN)$/i);
@@ -182,12 +193,13 @@ export function parseProfileLines(value,baseUrl=''){
     if(label==='EVENT'||label==='EVENTS'||label==='LIVE'||label==='SCHEDULE'||label==='UPCOMING'||label==='GAMES'||label==='MATCHES'){
       if(!eventLists.includes(url))eventLists.push(url);continue;
     }
+    if(label==='SEARCH'){if(!structure.searchTemplates.includes(url))structure.searchTemplates.push(url);continue;}
     if(!CATEGORY_SET.has(label)){invalid++;continue;}
     categories[label]??=[];
     if(!categories[label].includes(url))categories[label].push(url);
   }
   for(const key of Object.keys(categories))support[key]='YES';
-  return {categories,eventLists,support,invalid};
+  return {categories,eventLists,support,structure,invalid};
 }
 
 export function exportCustomSourcesPayload(storage=globalThis.localStorage){

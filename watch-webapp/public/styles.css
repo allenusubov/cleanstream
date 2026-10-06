@@ -599,3 +599,24 @@ a { text-decoration: none; }
   .settings-title-row .settings-title{margin:0;}
   .settings-source-tools{justify-content:flex-start;gap:12px 16px;}
 }
+
+/* v0.18 TV / movie catalog additions — uses the existing result/player system. */
+.results-section-title{margin:34px 0 8px;font-size:13px;font-weight:700;line-height:1;letter-spacing:.02em;color:var(--muted);}
+.catalog-row .event-heading{cursor:default;}
+.season-row .season-episodes{margin-top:16px;}
+.season-row .season-episodes>.event-row{padding-left:0;padding-right:0;}
+.tvm-player-nav{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:18px;margin-top:28px;font-size:clamp(13px,1.35vw,18px);font-weight:700;line-height:1;letter-spacing:-.035em;}
+#previous-episode{justify-self:start;}
+#autoplay-button{justify-self:center;color:var(--muted);}
+#autoplay-button.is-on{color:var(--fg);}
+#next-episode{justify-self:end;}
+.event-time .inline-live .live-separator{display:inline-block;font-size:1.35em;line-height:.65;vertical-align:-.03em;}
+@media(max-width:720px){
+  .tvm-player-nav{grid-template-columns:1fr 1fr;grid-template-areas:"prev next" "auto auto";row-gap:14px;margin-top:22px;font-size:12px;}
+  #previous-episode{grid-area:prev;}
+  #next-episode{grid-area:next;}
+  #autoplay-button{grid-area:auto;}
+}
+.tvm-player-nav:not([hidden]) + .player-stage{margin-top:22px;}
+.custom-source-profile-line{grid-template-columns:112px minmax(0,1fr);}
+@media(max-width:720px){.custom-source-profile-line{grid-template-columns:98px minmax(0,1fr);}}

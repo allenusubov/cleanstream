@@ -66,3 +66,16 @@ Keep request-based billing and minimum instances at zero if minimizing idle comp
 ## Access model
 
 This project is intended for public or authorized media/pages. It does not bypass DRM, subscriptions, authentication, or other access controls.
+
+## TV / Movie catalog (v0.18)
+
+Set a TMDB API Read Access Token on the server as `TMDB_BEARER_TOKEN` (or `TMDB_API_READ_TOKEN`). The token stays server-side. Without it, live search continues to work and the UI reports that TV / movie search is not configured.
+
+Custom sources can now learn/store `TV`, `MOVIES`, and reusable `SEARCH` routes. Manual examples:
+
+```text
+TV /tv
+MOVIES /movies
+SEARCH /search?q={query}
+TV NO
+```

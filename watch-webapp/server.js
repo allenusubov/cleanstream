@@ -11,6 +11,8 @@ import {eventJob} from './lib/discovery.js';
 import {AppError,safeURL} from './lib/network.js';
 import {customRegistry} from './lib/custom-sources.js';
 import {scanSourceProfile} from './lib/source-profile.js';
+import {searchTvm,tvDetails,tvSeason,movieDetails,episodeContext,tmdbConfigured} from './lib/tmdb.js';
+import {tvmSourceJob} from './lib/tvm-sources.js';
 const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
 app.set('trust proxy',1);
@@ -32,6 +34,22 @@ app.get('/api/events',async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
   res.json(await searchEvents(query));
 });
+
+app.get('/api/search',async(req,res)=>{
+  const query=String(req.query.q||'').trim().slice(0,100);
+  if(!query)throw new AppError('ENTER_EVENT');
+  res.setHeader('Cache-Control','no-store');
+  const [liveResult,tvmResult]=await Promise.allSettled([searchEvents(query),searchTvm(query)]);
+  const live=liveResult.status==='fulfilled'?liveResult.value:{events:[],alternatives:[],complete:false,notices:['SCHEDULE_UNAVAILABLE']};
+  const tvm=tvmResult.status==='fulfilled'?tvmResult.value:{tv:[],movies:[]};
+  const notices=[...(live.notices||[])];
+  if(tvmResult.status==='rejected')notices.push(tmdbConfigured()?'TMDB_UNAVAILABLE':'TMDB_NOT_CONFIGURED');
+  res.json({live,tv:tvm.tv||[],movies:tvm.movies||[],notices:[...new Set(notices)]});
+});
+app.get('/api/tvm/tv/:id',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await tvDetails(req.params.id));});
+app.get('/api/tvm/tv/:id/season/:season',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await tvSeason(req.params.id,req.params.season));});
+app.get('/api/tvm/tv/:id/episode/:season/:episode',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await episodeContext(req.params.id,req.params.season,req.params.episode));});
+app.get('/api/tvm/movie/:id',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await movieDetails(req.params.id));});
 app.get('/api/live-window',async(req,res)=>{
   const hours=Math.max(1,Math.min(Number(req.query.hours)||24,168));
   res.setHeader('Cache-Control','no-store');
@@ -100,6 +118,21 @@ app.post('/api/explore-sources',async(req,res)=>{
   detach.push(()=>clearInterval(heartbeat));
   res.on('close',()=>{closed=true;for(const fn of detach)fn();});
 });
+
+app.post('/api/tvm/sources',async(req,res)=>{
+  const item=req.body?.item;
+  const customSites=await customRegistry(req.body?.customSources||[]);
+  const job=tvmSourceJob(item,origin(req),customSites);
+  res.setHeader('Content-Type','application/x-ndjson');
+  res.setHeader('Cache-Control','no-store, no-transform');
+  res.setHeader('X-Accel-Buffering','no');
+  res.flushHeaders();
+  const write=state=>{if(res.destroyed||res.writableEnded)return;res.write(JSON.stringify(state)+'\n');if(state.done)res.end();};
+  job.listeners.add(write);
+  const heartbeat=setInterval(()=>{if(!res.destroyed&&!res.writableEnded)res.write('{"type":"ping"}\n');},10000);
+  res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);});
+  write(job.snapshot());job.start();
+});
 app.post('/api/source-test',async(req,res)=>{
   const raw=String(req.body?.url||'').trim();
   const url=await safeURL(raw.includes('://')?raw:`https://${raw}`);
@@ -109,7 +142,7 @@ app.post('/api/source-test',async(req,res)=>{
   res.json({ok:profile.status!=='UNREACHABLE',status:profile.status||'PARTIAL',reachable:Boolean(profile.reachable),
     pagesChecked:Number(profile.pagesChecked)||0,reachablePages:Number(profile.reachablePages)||0,
     url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase(),
-    categories:profile.categories||{},eventLists:profile.eventLists||[],support:profile.support||{},structure:profile.structure||{},testedAt:profile.testedAt||Date.now()});
+    categories:profile.categories||{},eventLists:profile.eventLists||[],support:profile.support||{},structure:profile.structure||{},reason:profile.reason||'',testedAt:profile.testedAt||Date.now()});
 });
 // Deliberately disabled: this app never relays video bytes to viewers or TVs.
 app.use('/api/media',(_req,res)=>res.status(410).json({code:'DIRECT_ONLY'}));

@@ -9,7 +9,7 @@ import {directoryLinks} from './directory.js';
 import {CATEGORY_ALIASES} from './source-profile.js';
 
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
-const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map(), mirrorCache=new Map(), mirrorJobs=new Map(), routeHistory=new Map(), mirrorHistory=new Map();
+const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map(), mirrorCache=new Map(), mirrorJobs=new Map(), routeHistory=new Map(), mirrorHistory=new Map(), eventPageHistory=new Map();
 const pool=new WorkPool(Math.max(1,Math.min(4,Number(process.env.EVENT_JOB_CONCURRENCY)||2)));
 const idFor=value=>crypto.createHash('sha256').update(value).digest('hex').slice(0,16);
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
@@ -162,6 +162,8 @@ async function genericPages(site,event,{light=false}={}) {
   const learned=routeHistory.get(routeKey);
   const urls=[...new Set([...(learned?[learned]:[]),...categories,...roots])];
   const found=[];
+  const shortcut=eventPageHistory.get(`${site.id}|${event.id}`);
+  if(shortcut&&Date.now()-shortcut.time<8*60*60*1000){found.push({url:shortcut.url,text:event.title,shortcut:true});if(light)return found;}
   for(const indexUrl of urls) {
     try {
       const links=await readIndex(site,indexUrl,event);
@@ -381,6 +383,7 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
             const candidates=(await fastCandidates(target,origin)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
             if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
             stats.success++;stats.totalMs+=candidates[0]?.startupMs||0;
+            const durablePage=target.parentUrl||target.url;if(durablePage)eventPageHistory.set(`${site.id}|${event.id}`,{url:durablePage,time:Date.now()});
             const reliability=stats.success/stats.attempts;
             for(const [index,media] of candidates.entries()){
               const score=100+reliability*20-Math.min((media.startupMs||0)/1000,25)+Math.min((media.quality||0)/1080,1)*5-index*.25;

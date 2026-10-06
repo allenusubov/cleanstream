@@ -1,9 +1,12 @@
-import {chromium} from 'playwright';
 import crypto from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {safeURL, fetchLimited, AppError, WorkPool} from './network.js';
 const pool=new WorkPool(Math.max(1,Math.min(6,Number(process.env.BROWSER_CONCURRENCY)||4)));
-let browserPromise=null;
+let browserPromise=null,chromiumPromise=null;
+async function chromiumApi(){
+  chromiumPromise ||= import('playwright').then(mod=>mod.chromium);
+  return chromiumPromise;
+}
 const cache=new Map(), inflight=new Map();
 const HLS=/\.m3u8(?:$|\?)/i;
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
@@ -13,6 +16,7 @@ export async function withPage(task) {
     try {
       // Keep one Chromium process warm for the lifetime of a Cloud Run instance.
       // Contexts are still isolated and closed after every job.
+      const chromium=await chromiumApi();
       browserPromise ||= chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE_PATH || undefined,args:['--no-sandbox','--disable-dev-shm-usage','--disable-gpu']});
       const browser=await browserPromise;
       context=await browser.newContext({serviceWorkers:'block',acceptDownloads:false,
