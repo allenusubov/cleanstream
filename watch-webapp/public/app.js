@@ -2,7 +2,7 @@ import {initSearch} from './search.js';
 import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
-import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,removeCustomSource,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
+import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,cleanupCustomSourceProfiles,removeCustomSource,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
 import {loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents,compactEventTitle} from './event-preferences.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
@@ -33,6 +33,7 @@ const tickerTrack=$('#ticker-track');
 const liveTicker=$('#live-ticker');
 const exploreButton=$('#explore-button');
 const testAllSourcesButton=$('#test-all-sources');
+const cleanupSourcesButton=$('#cleanup-sources');
 const importSourcesButton=$('#import-sources');
 const exportSourcesButton=$('#export-sources');
 const shareSourcesButton=$('#share-sources');
@@ -490,13 +491,25 @@ function profileEditor(row,item) {
   row.append(editor);textarea.focus();
 }
 async function testCustomSourceProfile(item){
+  // Purge stale content-detail routes before using the saved profile as TEST hints.
+  // This prevents an old Paw Patrol / individual episode URL from becoming a seed
+  // on every future scan.
+  const cleaned=cleanupCustomSourceProfiles(item.url);
+  const current=cleaned.items.find(source=>source.url===item.url)||item;
   const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
-    url:item.url,profile:{categories:item.categories||{},eventLists:item.eventLists||[],support:item.support||{},structure:item.structure||{}}
+    url:current.url,profile:{categories:current.categories||{},eventLists:current.eventLists||[],support:current.support||{},structure:current.structure||{}}
   })});
   if(!response.ok)throw new Error('SOURCE TEST FAILED');
   const data=await response.json();
-  mergeCustomSourceProfile(item.url,{categories:data.categories||{},eventLists:data.eventLists||[],support:data.support||{},structure:data.structure||{},test:{status:data.status||'PARTIAL',reason:data.reason||'',testedAt:data.testedAt||Date.now()},testedAt:data.testedAt||Date.now()});
+  mergeCustomSourceProfile(current.url,{categories:data.categories||{},eventLists:data.eventLists||[],support:data.support||{},structure:data.structure||{},test:{status:data.status||'PARTIAL',reason:data.reason||'',testedAt:data.testedAt||Date.now()},testedAt:data.testedAt||Date.now()});
+  // TEST itself should never leave behind random title pages or pagination copies.
+  cleanupCustomSourceProfiles(current.url);
   return data;
+}
+function cleanupAllCustomSources(){
+  const result=cleanupCustomSourceProfiles();renderSettingsSources();
+  const parts=[];if(result.removed)parts.push(`${result.removed} JUNK LINK${result.removed===1?'':'S'} REMOVED`);if(result.normalized)parts.push(`${result.normalized} ROUTE${result.normalized===1?'':'S'} CLEANED`);
+  settingsMessage.textContent=parts.join(' · ')||'SOURCE PROFILES ALREADY CLEAN';
 }
 async function testAllCustomSources(){
   const items=loadCustomSources().filter(item=>item.enabled);
@@ -946,6 +959,7 @@ tvButton.addEventListener('click', async () => {
 $('#link-form').addEventListener('submit', event => {event.preventDefault();openStream();});
 $('#settings-button').addEventListener('click', openSettings);
 testAllSourcesButton?.addEventListener('click',testAllCustomSources);
+cleanupSourcesButton?.addEventListener('click',cleanupAllCustomSources);
 exportSourcesButton?.addEventListener('click',downloadSourceExport);
 shareSourcesButton?.addEventListener('click',shareCustomSources);
 importSourcesButton?.addEventListener('click',()=>importSourcesFile?.click());

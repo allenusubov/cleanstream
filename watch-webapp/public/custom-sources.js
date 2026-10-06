@@ -17,6 +17,40 @@ export function likelyEventRoute(value){
   }catch{return true;}
 }
 
+const CLEANUP_PAGINATION_PARAMS=new Set(['page','p','pg','offset','start','from']);
+const CLEANUP_TRACKING_PARAMS=new Set(['utm_source','utm_medium','utm_campaign','utm_term','utm_content','fbclid','gclid']);
+function canonicalProfileRoute(value){
+  const url=new URL(normalizeProfileUrl(value));
+  for(const key of [...url.searchParams.keys()]){
+    const lower=key.toLowerCase();if(CLEANUP_PAGINATION_PARAMS.has(lower)||CLEANUP_TRACKING_PARAMS.has(lower))url.searchParams.delete(key);
+  }
+  return url.href;
+}
+export function likelyContentRoute(value){
+  try{
+    const url=new URL(value),rawParts=url.pathname.split('/').filter(Boolean),parts=rawParts.map(part=>decodeURIComponent(part).toLowerCase().replace(/[-_+]+/g,' ').replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim());
+    if(parts.some(part=>['genre','genres','category','categories','tag','tags'].includes(part)))return true;
+    if(/\/(?:watch|play|embed)\/(?:movie|movies|show|shows|series|tv)\//i.test(url.pathname))return true;
+    if(/\/(?:movie|movies|film|films|show|shows|series|tv)\/(?:view|watch|play)\//i.test(url.pathname))return true;
+    if(/\/(?:event|events)\/[^/]+/i.test(url.pathname))return true;
+    if(/\/(?:watch|play)\/(?:\d{2,}[-_][^/]+|[^/]*[-_]\d{4})(?:\/|$)/i.test(url.pathname))return true;
+    const contentIndex=parts.findIndex(part=>['movie','movies','film','films','show','shows','series','tv'].includes(part));
+    if(contentIndex>=0&&contentIndex<parts.length-1){
+      const rest=parts.slice(contentIndex+1),first=rest[0]||'';
+      if(/^(?:view|watch|play)$/.test(first)&&rest.length>1)return true;
+      if(/^\d{2,}(?:\b| )/.test(first)||/^\d{2,}[-_]/.test(rawParts[contentIndex+1]||''))return true;
+      if(rest.length>=2&&rest.slice(-2).every(part=>/^\d+$/.test(part)))return true;
+      if(first.split(' ').length>=3&&!['popular','latest','new','trending','top','all'].includes(first))return true;
+    }
+    const last=parts.at(-1)||'';
+    if(parts.length>=2&&last.split(' ').length>=5)return true;
+    return false;
+  }catch{return true;}
+}
+function cleanupRoute(value){
+  try{const url=canonicalProfileRoute(value);if(likelyEventRoute(url)||likelyContentRoute(url))return null;return url;}catch{return null;}
+}
+
 export function normalizeCustomSourceUrl(value) {
   const raw=String(value||'').trim();
   if(!raw)throw new Error('ENTER A SOURCE URL');
@@ -157,6 +191,40 @@ export function recordCustomSourceSuccess(url,startupMs=0,details={},storage=glo
     return {...item,performance:{...old,successes,avgWatchMs,lastSuccessAt:Date.now()},structure};
   }),storage);
 }
+export function cleanupCustomSourceProfiles(targetUrl='',storage=globalThis.localStorage){
+  let removed=0,normalized=0,sourcesChanged=0;
+  const items=loadCustomSources(storage).map(item=>{
+    if(targetUrl&&item.url!==targetUrl)return item;
+    let changed=false;const categories={};const support={...(item.support||{})};
+    for(const [key,values] of Object.entries(item.categories||{})){
+      const out=[],seen=new Set();const original=Array.isArray(values)?values:[];
+      for(const value of original){
+        const cleaned=cleanupRoute(value);
+        if(!cleaned){removed++;changed=true;continue;}
+        if(cleaned!==value){normalized++;changed=true;}
+        if(seen.has(cleaned)){removed++;changed=true;continue;}
+        seen.add(cleaned);out.push(cleaned);
+      }
+      if(out.length)categories[key]=out;
+      else if(original.length&&support[key]==='YES'){support[key]='UNKNOWN';changed=true;}
+    }
+    const eventLists=[],eventSeen=new Set();
+    for(const value of item.eventLists||[]){
+      const cleaned=cleanupRoute(value);
+      if(!cleaned){removed++;changed=true;continue;}
+      if(cleaned!==value){normalized++;changed=true;}
+      if(eventSeen.has(cleaned)){removed++;changed=true;continue;}
+      eventSeen.add(cleaned);eventLists.push(cleaned);
+    }
+    const structure=cleanStructure(item.structure);
+    // Search/title/episode templates are intentionally preserved: unlike a random
+    // learned content page, they contain reusable placeholders and are valuable.
+    const next={...item,categories,eventLists,support,structure};
+    if(changed)sourcesChanged++;return next;
+  });
+  return {items:saveCustomSources(items,storage),removed,normalized,sourcesChanged};
+}
+
 export function removeCustomSource(url,storage=globalThis.localStorage) {return saveCustomSources(loadCustomSources(storage).filter(item=>item.url!==url),storage);}
 export function enabledCustomSources(storage=globalThis.localStorage) {return loadCustomSources(storage).filter(item=>item.enabled);}
 export function enabledCustomSourceUrls(storage=globalThis.localStorage) {return enabledCustomSources(storage).map(item=>item.url);}

@@ -60,3 +60,19 @@ test('site learning can remember a browser search UI even without a reusable GET
   const profile=profileFromLinks([{url:'https://example.com/tv',text:'TV Shows'}],'https://example.com/',[],true);
   assert.equal(profile.structure.browserSearch,true);
 });
+
+test('site learning treats TV Series / Shows / Television as TV navigation and rejects title-page false positives',()=>{
+  const profile=profileFromLinks([
+    {url:'https://example.com/tv-series',text:'TV Series'},
+    {url:'https://example.com/shows?page=2',text:'Shows'},
+    {url:'https://example.com/movies',text:'Films'},
+    {url:'https://example.com/show/207347-blue-box',text:'Blue Box'},
+    {url:'https://example.com/movie/9012-jackass-the-movie',text:'Jackass: The Movie'},
+    {url:'https://example.com/watch/show/22980-watch-what-happens-live-with-andy-cohen/1/1',text:'Watch What Happens Live with Andy Cohen'}
+  ],'https://example.com/');
+  assert.ok(profile.categories.TV.includes('https://example.com/tv-series'));
+  assert.ok(profile.categories.TV.includes('https://example.com/shows'));
+  assert.equal(profile.categories.BOXING?.some(url=>url.includes('blue-box'))||false,false);
+  assert.equal(profile.categories.MOVIES.some(url=>url.includes('jackass-the-movie')),false);
+  assert.equal(profile.categories.TV.some(url=>url.includes('andy-cohen')),false);
+});

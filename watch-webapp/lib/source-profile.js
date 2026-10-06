@@ -3,16 +3,22 @@ import {fetchLimited,safeURL} from './network.js';
 import {withPage,visit} from './resolver.js';
 
 export const CATEGORY_ALIASES={
-  TV:['tv','television','shows','series','episodes'], MOVIES:['movies','movie','films','film'],
-  NBA:['nba','basketball'], WNBA:['wnba','women basketball','basketball'], NFL:['nfl','american football','football'],
+  // Treat common navigation labels as the same family. TEST should learn a site's
+  // structure, not require one exact word such as "TV".
+  TV:['tv','television','tv shows','television shows','shows','tv series','television series','series','episodes','tv episodes','watch tv','watch shows','watch series'],
+  MOVIES:['movies','movie','films','film','cinema','feature films','watch movies','watch films'],
+  NBA:['nba','basketball'], WNBA:['wnba','women basketball','womens basketball'], NFL:['nfl','american football'],
   CFB:['cfb','college football','ncaa football'], NCAAB:['ncaab','ncaa basketball','college basketball'], WNCAAB:['wncaab','womens college basketball'],
-  UFC:['ufc','mma','fight'], MMA:['mma','ufc','fight'], BOXING:['boxing','box'], NHL:['nhl','hockey'], MLB:['mlb','baseball'], SOCCER:['soccer','football'],
+  UFC:['ufc','ultimate fighting championship'], MMA:['mma','mixed martial arts'], BOXING:['boxing','boxing streams','boxing events'], NHL:['nhl','hockey'], MLB:['mlb','baseball'], SOCCER:['soccer','football'],
   F1:['f1','formula 1','formula one','motorsport'], NASCAR:['nascar'], INDYCAR:['indycar','indy car'], GOLF:['golf','pga','lpga'],
   TENNIS:['tennis'], RUGBY:['rugby'], CRICKET:['cricket']
 };
 
 const EVENT_WORDS=['events','live','schedule','upcoming','matches','games','fixtures','calendar'];
-const HUB_WORDS=['sports','sport','watch','live','events','schedule','tv','shows','series','movies','films'];
+const HUB_WORDS=['sports','sport','watch','live','events','schedule','tv','television','shows','series','movies','films','cinema'];
+const HUB_PHRASES=[...new Set([...HUB_WORDS,...Object.values(CATEGORY_ALIASES).flat()].map(value=>String(value).toLowerCase()))];
+const PAGINATION_PARAMS=new Set(['page','p','pg','offset','start','from']);
+const TRACKING_PARAMS=new Set(['utm_source','utm_medium','utm_campaign','utm_term','utm_content','fbclid','gclid']);
 const normalize=value=>String(value||'').toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
 const cleanCandidate=(value,base)=>{
   try {
@@ -30,6 +36,54 @@ const linkText=link=>{
 function wordHit(text,term){
   const needle=normalize(term);if(!needle)return false;
   return (` ${text} `).includes(` ${needle} `);
+}
+function routePieces(link){
+  try{
+    const url=new URL(link.url),parts=url.pathname.split('/').filter(Boolean).map(value=>normalize(decodeURIComponent(value)));
+    const hash=normalize(decodeURIComponent(url.hash||''));
+    const query=[...url.searchParams.values()].map(value=>normalize(value)).filter(Boolean);
+    return {url,parts,hash,query,visible:normalize(link.text||'')};
+  }catch{return {url:null,parts:[],hash:'',query:[],visible:normalize(link.text||'')}}
+}
+function compactLabelHit(value,phrase){
+  const text=normalize(value),needle=normalize(phrase);if(!text||!needle)return false;
+  if(text===needle)return true;
+  const words=text.split(' ');if(words.length>6)return false;
+  return text===`watch ${needle}`||text===`${needle} streams`||text===`${needle} stream`||text===`live ${needle}`||text===`${needle} live`||text===`watch ${needle} online`;
+}
+function canonicalNavigationLink(link){
+  try{
+    const url=new URL(link.url);
+    for(const key of [...url.searchParams.keys()]){
+      const lower=key.toLowerCase();if(TRACKING_PARAMS.has(lower)||PAGINATION_PARAMS.has(lower))url.searchParams.delete(key);
+    }
+    return {...link,url:url.href};
+  }catch{return link;}
+}
+export function likelyContentDetailPage(link){
+  try{
+    const {url,parts,visible}=routePieces(link);if(!url)return true;
+    const path='/'+parts.join('/');
+    // Search result pages and broad navigation pages are reusable; individual
+    // title/episode/watch pages are not.
+    if(parts.some(part=>['genre','genres','category','categories','tag','tags'].includes(part)))return true;
+    if(/\b(?:season|episode)\s*\d+\b/.test(path)||/(?:^|\/)s\d{1,2}e\d{1,3}(?:\/|$)/i.test(path))return true;
+    if(/\/(?:watch|play|embed)\/(?:movie|movies|show|shows|series|tv)\//i.test(url.pathname))return true;
+    if(/\/(?:movie|movies|film|films|show|shows|series|tv)\/(?:view|watch|play)\//i.test(url.pathname))return true;
+    const contentIndex=parts.findIndex(part=>['movie','movies','film','films','show','shows','series','tv'].includes(part));
+    if(contentIndex>=0&&contentIndex<parts.length-1){
+      const rest=parts.slice(contentIndex+1);const first=rest[0]||'';
+      if(/^(?:view|watch|play)$/.test(first)&&rest.length>1)return true;
+      if(/^\d{2,}(?:\b| )/.test(first)||/^\d{2,}[-_]/.test(decodeURIComponent(url.pathname.split('/').filter(Boolean)[contentIndex+1]||'')))return true;
+      if(rest.length>=2&&rest.slice(-2).every(value=>/^\d+$/.test(value)))return true;
+      if(first.split(' ').length>=3&&!['popular','latest','new','trending','top','all'].includes(first))return true;
+    }
+    // A deep slug with a long human title is usually an item page, even when the
+    // title happens to contain a category word (e.g. "Blue Box").
+    const last=parts.at(-1)||'';
+    if(parts.length>=2&&last.split(' ').length>=4&&visible&&visible.split(' ').length>=2)return true;
+    return false;
+  }catch{return true;}
 }
 export function likelyEventPage(link){
   try{
@@ -49,16 +103,23 @@ function routeDepth(link){
   try{return new URL(link.url).pathname.split('/').filter(Boolean).length;}catch{return 99;}
 }
 function categoryScore(link,key,aliases){
-  if(likelyEventPage(link))return -1000;
-  const text=linkText(link),visible=normalize(link.text||'');
-  const exact=normalize(key);
-  let score=Math.max(0,8-routeDepth(link)*2);
-  if(wordHit(visible,exact))score+=30;
-  if(wordHit(text,exact))score+=20;
-  for(const alias of aliases){
-    if(wordHit(visible,alias))score+=14;
-    else if(wordHit(text,alias))score+=7;
+  if(likelyEventPage(link)||likelyContentDetailPage(link))return -1000;
+  const text=linkText(link),{parts,hash,query,visible}=routePieces(link);
+  const phrases=[key,...aliases].map(normalize).filter(Boolean);let score=Math.max(0,8-routeDepth(link)*2),strong=false;
+  for(const phrase of phrases){
+    if(compactLabelHit(visible,phrase)){score+=phrase===normalize(key)?44:34;strong=true;}
+    if(parts.some(part=>part===phrase)){score+=phrase===normalize(key)?34:26;strong=true;}
+    if(hash===phrase){score+=28;strong=true;}
+    if(query.some(value=>value===phrase)){score+=24;strong=true;}
   }
+  // Only use loose word matches after a real navigation signal. This prevents a
+  // title such as "Blue Box" from teaching BOXING and movie names containing
+  // "football" from teaching a sports category.
+  if(strong){
+    const exact=normalize(key);if(wordHit(text,exact))score+=8;
+    for(const alias of aliases)if(wordHit(text,alias))score+=3;
+  }
+  if(!strong)return -1000;
   // "football" is ambiguous. Prefer explicit NFL/CFB/SOCCER wording when it exists.
   if(['NFL','CFB','SOCCER'].includes(key) && !wordHit(text,key) && wordHit(text,'football'))score-=4;
   if(key==='SOCCER' && /\b(?:nfl|cfb|college football|ncaa football)\b/.test(text))score-=40;
@@ -67,7 +128,7 @@ function categoryScore(link,key,aliases){
   return score;
 }
 function eventScore(link){
-  if(likelyEventPage(link))return -1000;
+  if(likelyEventPage(link)||likelyContentDetailPage(link))return -1000;
   const text=linkText(link),visible=normalize(link.text||'');let score=0;
   for(const word of EVENT_WORDS){
     if(wordHit(visible,word))score+=12;
@@ -116,8 +177,8 @@ function dedupeLinks(links,base){
   for(const link of links||[]){
     const url=cleanCandidate(link.url,base);if(!url)continue;
     const text=String(link.text||'').replace(/\s+/g,' ').trim();
-    const old=map.get(url);
-    if(!old || text.length>(old.text||'').length)map.set(url,{url,text});
+    const candidate=canonicalNavigationLink({url,text});const old=map.get(candidate.url);
+    if(!old || text.length>(old.text||'').length)map.set(candidate.url,candidate);
   }
   return [...map.values()];
 }
@@ -129,7 +190,9 @@ export function profileFromLinks(links,base,searchTemplates=[],browserSearch=fal
   }
   const eventLists=[...new Set(clean.map(link=>({link,score:eventScore(link)})).filter(x=>x.score>=10).sort((a,b)=>b.score-a.score).map(x=>x.link.url))];
   const hubs=clean.filter(link=>{
-    const text=linkText(link);return HUB_WORDS.some(word=>wordHit(text,word));
+    if(likelyContentDetailPage(link)||likelyEventPage(link))return false;
+    const {parts,hash,visible}=routePieces(link);
+    return HUB_PHRASES.some(word=>compactLabelHit(visible,word)||parts.some(part=>part===normalize(word))||hash===normalize(word));
   }).slice(0,6).map(link=>link.url);
   const support={};for(const key of Object.keys(CATEGORY_ALIASES))support[key]=(categories[key]||[]).length?'YES':'UNKNOWN';
   const structure=structureFromLinks(clean);structure.searchTemplates=[...new Set(searchTemplates)].slice(0,8);structure.browserSearch=Boolean(browserSearch);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   addCustomSource,loadCustomSources,setCustomSourceProfile,mergeCustomSourceProfile,
   exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,
-  parseProfileLines,recordCustomSourceSuccess
+  parseProfileLines,recordCustomSourceSuccess,cleanupCustomSourceProfiles
 } from '../public/custom-sources.js';
 
 const storage=()=>{const data=new Map();return {getItem:k=>data.get(k)||null,setItem:(k,v)=>data.set(k,v)};};
@@ -30,4 +30,27 @@ test('custom sources export/import and share token round trip',()=>{
   const a=storage();addCustomSource('example.com',a);setCustomSourceProfile('https://example.com/',parseProfileLines('NBA /nba','https://example.com/'),a);
   const payload=exportCustomSourcesPayload(a),token=encodeCustomSourcesShare(a);assert.equal(decodeCustomSourcesShare(token).sources.length,1);
   const b=storage();const result=importCustomSourcesPayload(payload,b);assert.equal(result.added,1);assert.equal(loadCustomSources(b)[0].categories.NBA[0],'https://example.com/nba');
+});
+
+
+test('custom source cleanup removes learned title pages and collapses pagination routes',()=>{
+  const s=storage();
+  s.setItem('cleanstream.customSources.v1',JSON.stringify([{
+    url:'https://example.com/',enabled:true,
+    categories:{
+      TV:['https://example.com/shows?page=1','https://example.com/shows?page=2','https://example.com/show/207347-blue-box','https://example.com/watch/show/22980-title/1/1'],
+      MOVIES:['https://example.com/movies','https://example.com/movie/9012-jackass-the-movie'],
+      BOXING:['https://example.com/show/207347-blue-box']
+    },
+    support:{TV:'YES',MOVIES:'YES',BOXING:'YES'},
+    eventLists:['https://example.com/events','https://example.com/event/nfl-network-m']
+  }]));
+  const result=cleanupCustomSourceProfiles('',s),item=result.items[0];
+  assert.deepEqual(item.categories.TV,['https://example.com/shows']);
+  assert.deepEqual(item.categories.MOVIES,['https://example.com/movies']);
+  assert.equal(item.categories.BOXING,undefined);
+  assert.equal(item.support.BOXING,'UNKNOWN');
+  assert.deepEqual(item.eventLists,['https://example.com/events']);
+  assert.ok(result.removed>=4);
+  assert.ok(result.normalized>=1);
 });
