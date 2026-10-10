@@ -1,3 +1,5 @@
+import {parseQuery} from './public/events.js';
+import {isSportQuery} from './lib/catalog.js';
 import express from 'express';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -13,10 +15,10 @@ import {customRegistry} from './lib/custom-sources.js';
 import {scanSourceProfile} from './lib/source-profile.js';
 import {searchTvm,tvDetails,tvSeason,movieDetails,episodeContext,tmdbConfigured} from './lib/tmdb.js';
 import {tvmSourceJob} from './lib/tvm-sources.js';
-const app=express();
+export const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
 app.set('trust proxy',1);
-app.use(express.json({limit:'64kb'}));
+app.use(express.json({limit:'2mb'}));
 app.use((req,res,next)=>{
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
@@ -39,7 +41,9 @@ app.get('/api/search',async(req,res)=>{
   const query=String(req.query.q||'').trim().slice(0,100);
   if(!query)throw new AppError('ENTER_EVENT');
   res.setHeader('Cache-Control','no-store');
-  const [liveResult,tvmResult]=await Promise.allSettled([searchEvents(query),searchTvm(query)]);
+  const parsed=parseQuery(query);
+  const sports=['league','sport','team','matchup'].includes(parsed.kind)||isSportQuery(query);
+  const [liveResult,tvmResult]=await Promise.allSettled([searchEvents(query),sports?Promise.resolve({tv:[],movies:[]}):searchTvm(query)]);
   const live=liveResult.status==='fulfilled'?liveResult.value:{events:[],alternatives:[],complete:false,notices:['SCHEDULE_UNAVAILABLE']};
   const tvm=tvmResult.status==='fulfilled'?tvmResult.value:{tv:[],movies:[]};
   const notices=[...(live.notices||[])];
@@ -76,7 +80,7 @@ async function streamEventSources(req,res){
   if(!event) throw new AppError('EVENT_UNAVAILABLE',404);
   const customSites=await customRegistry(req.body?.customSources||[]);
   const mode=req.body?.mode==='light'?'light':'deep';
-  const job=eventJob(event,origin(req),customSites,{mode});
+  const job=eventJob(event,origin(req),customSites,{mode,resume:Boolean(req.body?.resume)});
   res.setHeader('Content-Type','application/x-ndjson');
   res.setHeader('Cache-Control','no-store, no-transform');
   res.setHeader('X-Accel-Buffering','no');
@@ -88,7 +92,7 @@ async function streamEventSources(req,res){
   };
   job.listeners.add(write);
   const heartbeat=setInterval(()=>{if(!res.destroyed && !res.writableEnded) res.write('{"type":"ping"}\n');},10000);
-  res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);});
+  res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);setTimeout(()=>{if(!job.listeners.size&&!job.done)job.cancel?.();},250).unref();});
   write(job.snapshot());job.start();
 }
 app.get('/api/events/:id/sources',streamEventSources);
@@ -112,7 +116,7 @@ app.post('/api/explore-sources',async(req,res)=>{
       res.write(JSON.stringify(state)+'\n');
       if(state.done&&!counted){counted=true;completed++;maybeEnd();}
     };
-    job.listeners.add(write);detach.push(()=>job.listeners.delete(write));write(job.snapshot());job.start();
+    job.listeners.add(write);detach.push(()=>{job.listeners.delete(write);setTimeout(()=>{if(!job.listeners.size&&!job.done)job.cancel?.();},250).unref();});write(job.snapshot());job.start();
   }
   const heartbeat=setInterval(()=>{if(!closed&&!res.destroyed&&!res.writableEnded)res.write('{"type":"ping"}\n');},10000);
   detach.push(()=>clearInterval(heartbeat));
@@ -122,7 +126,7 @@ app.post('/api/explore-sources',async(req,res)=>{
 app.post('/api/tvm/sources',async(req,res)=>{
   const item=req.body?.item;
   const customSites=await customRegistry(req.body?.customSources||[]);
-  const job=tvmSourceJob(item,origin(req),customSites,{mode:req.body?.mode||'deep'});
+  const job=tvmSourceJob(item,origin(req),customSites,{mode:req.body?.mode||'deep',resume:Boolean(req.body?.resume)});
   res.setHeader('Content-Type','application/x-ndjson');
   res.setHeader('Cache-Control','no-store, no-transform');
   res.setHeader('X-Accel-Buffering','no');
@@ -130,7 +134,7 @@ app.post('/api/tvm/sources',async(req,res)=>{
   const write=state=>{if(res.destroyed||res.writableEnded)return;res.write(JSON.stringify(state)+'\n');if(state.done)res.end();};
   job.listeners.add(write);
   const heartbeat=setInterval(()=>{if(!res.destroyed&&!res.writableEnded)res.write('{"type":"ping"}\n');},10000);
-  res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);});
+  res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);setTimeout(()=>{if(!job.listeners.size&&!job.done)job.cancel?.();},250).unref();});
   write(job.snapshot());job.start();
 });
 app.post('/api/source-test',async(req,res)=>{
@@ -150,6 +154,6 @@ app.use(express.static(path.join(root,'public'),{maxAge:0}));
 app.use((error,_req,res,_next)=>{
   console.error('Request failed',error.code||error.name);
   if(res.headersSent) return res.end();
-  res.status(error.status||500).json({code:error.code||'SOURCE_UNAVAILABLE'});
+  res.status(error.status||500).json({code:error.type==='entity.too.large'?'SOURCE_LIST_TOO_LARGE':error.code||'SOURCE_UNAVAILABLE'});
 });
-app.listen(Number(process.env.PORT||8080),'0.0.0.0',()=>console.log('CLEAN STREAM ready'));
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))app.listen(Number(process.env.PORT||8080),'0.0.0.0',()=>console.log('CLEAN STREAM ready'));

@@ -8,7 +8,7 @@
   <title>Clean Stream</title>
   <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
   <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
-  <link rel="stylesheet" href="/styles.css?v=0.18.4" />
+  <link rel="stylesheet" href="/styles.css?v=0.19.0" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -33,11 +33,11 @@
           <div class="explore-filters" id="explore-filters" aria-label="Explore event categories"></div>
         </div>
         <form class="search-row" id="event-form">
-          <input id="event-query" type="search" placeholder="FIND STREAM" aria-label="Find stream" autocomplete="off" maxlength="100" />
+          <input id="event-query" type="search" placeholder="FIND LIVE EVENT" aria-label="Find live event" autocomplete="off" maxlength="100" />
           <button class="text-action" id="search-button" type="submit">SEARCH</button>
         </form>
         <form class="search-row" id="link-form">
-          <input id="stream-url" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="PASTE LINK" aria-label="Paste link" />
+          <input id="stream-url" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="PASTE EVENT LINK" aria-label="Paste event link" />
           <button class="text-action" id="open-stream" type="submit">WATCH</button>
         </form>
         <p class="message" id="home-message" aria-live="polite"></p>
@@ -116,10 +116,12 @@ MAX VERSTAPPEN" aria-label="Favorite teams, athletes or fighters"></textarea>
           <button class="text-action player-back" id="back-button" type="button" aria-label="Back">&lt;</button>
           <a class="player-brand home-link" href="/">CLEAN STREAM</a>
         </div>
-        <button class="text-action" id="refresh-button" type="button" disabled>REFRESH</button>
         <button class="text-action" id="sources-button" type="button" aria-expanded="false" aria-controls="source-menu">SOURCES</button>
       </header>
       <div class="source-menu" id="source-menu" hidden role="menu" aria-label="Available sources"></div>
+      <div class="player-refresh">
+        <button class="text-action" id="refresh-button" type="button" disabled>REFRESH</button>
+      </div>
       <nav class="tvm-player-nav" id="tvm-player-nav" aria-label="Episode navigation" hidden>
         <button class="text-action" id="previous-episode" type="button">&lt; PREVIOUS EPISODE</button>
         <button class="text-action" id="autoplay-button" type="button" aria-pressed="false">AUTOPLAY OFF</button>
@@ -157,7 +159,7 @@ MAX VERSTAPPEN" aria-label="Favorite teams, athletes or fighters"></textarea>
   </main>
 
   <script>window.__onGCastApiAvailable = value => { window.__castReady = value; };</script>
-  <script type="module" src="/app.js?v=0.18.4"></script>
+  <script type="module" src="/app.js?v=0.19.0"></script>
   <script async src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
 </body>
 </html>

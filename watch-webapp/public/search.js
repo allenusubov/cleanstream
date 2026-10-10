@@ -1,3 +1,4 @@
+import {compactSources,eligibleEvent,discoveryMessage} from './source-request.js';
 import {parseQuery} from './events.js';
 import {enabledCustomSources,recordCustomSourceSuccess} from './custom-sources.js';
 import {eventCategory,EVENT_CATEGORIES} from './event-preferences.js';
@@ -24,13 +25,20 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
   const filterRow=document.querySelector('#explore-filter-row'),filters=document.querySelector('#explore-filters');
   let generation=0,controllers=[],lastQuery='',latest=new Map(),exploreEvents=[],selectedFilters=new Set(['ALL']);
   const discoveryState=new Map(),recordedSuccesses=new Set();
+  let activeChecks=0;const waitingChecks=[];
+  function scheduled(task,signal,priority=false){return new Promise((resolve,reject)=>{
+    const cancel=()=>{const i=waitingChecks.indexOf(entry);if(i>=0)waitingChecks.splice(i,1);reject(new DOMException('Cancelled','AbortError'));};
+    const entry=()=>{signal.removeEventListener('abort',cancel);activeChecks++;Promise.resolve().then(()=>{if(signal.aborted)throw new DOMException('Cancelled','AbortError');return task();}).then(resolve,reject).finally(()=>{activeChecks--;waitingChecks.shift()?.();});};
+    if(signal.aborted)return cancel();
+    if(activeChecks<2)entry();else {priority?waitingChecks.unshift(entry):waitingChecks.push(entry);signal.addEventListener('abort',cancel,{once:true});}
+  });}
 
   const stop=()=>{generation++;controllers.forEach(c=>c.abort());controllers=[];discoveryState.clear();};
   const controller=()=>{const c=new AbortController();controllers.push(c);return c;};
-  const sourceRequest=(item,signal,mode='deep')=>isTvm(item)?fetch('/api/tvm/sources',{
-    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({item,customSources:enabledCustomSources(),mode}),signal
+  const sourceRequest=(item,signal,mode='deep',resume=false)=>isTvm(item)?fetch('/api/tvm/sources',{
+    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({item,customSources:compactSources(enabledCustomSources(),item),mode,resume}),signal
   }):fetch(`/api/events/${encodeURIComponent(item.id)}/sources`,{
-    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customSources:enabledCustomSources(),mode}),signal
+    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customSources:compactSources(enabledCustomSources(),item),mode,resume}),signal
   });
   const setExploreMode=value=>{home.classList.toggle('is-explore',value);filterRow.hidden=!value;form.hidden=value;};
   const bestPlayable=id=>(latest.get(id)||[]).find(playableSource)||null;
@@ -43,52 +51,57 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
       const left=element('span','source-copy');left.append(element('span','source-name',source.displayName||source.name||`SOURCE ${String(i+1).padStart(2,'0')}`));
       if(source.quality)left.append(element('span','source-detail',`${source.quality}P`));
       else if(source.mirrorLabel && source.mirrorLabel!=='DEFAULT')left.append(element('span','source-detail',source.mirrorLabel));
-      button.append(left);if(source.recommended)button.append(element('span','source-rank','RECOMMENDED'));
+      button.append(left);button.append(element('span','source-rank',source.provisional?'TRY SOURCE':'AVAILABLE'));
+      if(source.mirrorLabel&&source.mirrorLabel!=='DEFAULT'&&source.quality)left.append(element('span','source-detail',source.mirrorLabel));
       button.addEventListener('click',()=>onWatch(source,latest.get(item.id)||[],item));list.append(button);
     }
+    const state=discoveryState.get(item.id);
+    if(state?.partial&&!state.running){const more=element('button','text-action source-more','CHECK MORE');more.type='button';more.addEventListener('click',()=>sources(item,row,generation,{mode:'deep',resume:true}));list.append(more);}
   }
   function updateAction(item,row,{done=false,status='CHECKING'}={}){
     const state=row.querySelector('.event-state'),action=row.querySelector('.event-action');
     const sources=(latest.get(item.id)||[]).filter(playableSource),playable=bestPlayable(item.id);
-    if(state){if(sources.length)state.textContent=countLabel(sources.length);else if(done)state.textContent=labels[status]||'NO SOURCES FOUND';else state.textContent='';}
+    if(state){if(sources.length)state.textContent=countLabel(sources.length);else if(done)state.textContent=discoveryMessage({status,partial:discoveryState.get(item.id)?.partial});else state.textContent='';}
     if(action){if(playable){action.textContent='WATCH';action.disabled=false;action.dataset.mode='watch';}
       else if(discoveryState.get(item.id)?.running){action.textContent='CHECKING SOURCES';action.disabled=true;action.dataset.mode='checking';}
-      else {action.textContent='CHECK SOURCES';action.disabled=false;action.dataset.mode='check';}}
+      else {action.textContent=discoveryState.get(item.id)?.partial?'CHECK MORE':'CHECK SOURCES';action.disabled=false;action.dataset.mode='check';}}
   }
   function recordSuccess(item,source){
+    if(source.provisional)return;
     const key=`${item.id}|${source.sourceRoot||source.siteId||source.id}`;
     if(source.sourceRoot&&!recordedSuccesses.has(key)){recordedSuccesses.add(key);recordCustomSourceSuccess(source.sourceRoot,source.startupMs||0,{eventUrl:source.sourceUrl,mediaUrl:source.mediaUrl,mirrorLabel:source.mirrorLabel,structure:source.learnedStructure||{}});}
   }
   async function consumeStream(response,item,onUpdate=()=>{}){
-    if(!response.ok)throw new Error('SOURCES UNAVAILABLE');
+    if(!response.ok){let error;try{error=await response.json();}catch{}throw new Error(error?.code==='SOURCE_LIST_TOO_LARGE'?'SOURCE_LIST_TOO_LARGE':'SOURCES_UNAVAILABLE');}
     const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',found=[],finalStatus='CHECKING',doneState=false;
     while(true){
       const read=await reader.read();if(read.done)break;buffer+=decoder.decode(read.value,{stream:true});let end;
       while((end=buffer.indexOf('\n'))>=0){
         const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;let data;try{data=JSON.parse(line);}catch{continue;}if(data.type!=='update')continue;
         found=(data.sources||[]).filter(playableSource);finalStatus=data.status||finalStatus;doneState=Boolean(data.done);
-        for(const source of found)recordSuccess(item,source);latest.set(item.id,found);writeSourceCache(item.id,found,{done:doneState,status:finalStatus});
+        for(const source of found)recordSuccess(item,source);latest.set(item.id,found);writeSourceCache(item.id,found,{done:doneState,status:finalStatus,partial:Boolean(data.partial)});
         window.dispatchEvent(new CustomEvent('cleanstream:sources-updated',{detail:{eventId:item.id,sources:found}}));onUpdate(found,data);
       }
     }
     return {sources:found,status:finalStatus,done:doneState};
   }
-  async function sources(item,row,token,{mode='deep'}={}) {
-    const existing=discoveryState.get(item.id);if(existing?.running)return existing.promise;
-    const state={running:true,done:false,status:'CHECKING',promise:null};discoveryState.set(item.id,state);updateAction(item,row);
+  async function sources(item,row,token,{mode='deep',resume=false}={}) {
+    const existing=discoveryState.get(item.id);if(existing?.running){if(mode==='deep'&&existing.mode==='light')return existing.promise.then(()=>token===generation?sources(item,row,token,{mode:'deep'}):null);return existing.promise;}
+    resume=resume||Boolean(existing?.partial);
+    const state={mode,running:true,done:false,status:'CHECKING',partial:false,promise:null};discoveryState.set(item.id,state);updateAction(item,row);
     const signal=controller().signal;
-    state.promise=(async()=>{
+    state.promise=scheduled(async()=>{
       try {
-        let response=await sourceRequest(item,signal,mode);
-        if(!isTvm(item)&&response.status===404){await fetch(`/api/events?q=${encodeURIComponent(lastQuery||item.title)}`,{signal});response=await sourceRequest(item,signal,mode);}
+        let response=await sourceRequest(item,signal,mode,resume);
+        if(!isTvm(item)&&response.status===404){await fetch(`/api/events?q=${encodeURIComponent(lastQuery||item.title)}`,{signal});response=await sourceRequest(item,signal,mode,resume);}
         const result=await consumeStream(response,item,(visible,data)=>{
-          if(token!==generation)return;if(row.classList.contains('is-expanded'))renderSources(item,row,visible);
+          if(token!==generation)return;state.partial=Boolean(data.partial);state.running=!data.done;if(row.classList.contains('is-expanded'))renderSources(item,row,visible);
           state.done=Boolean(data.done);state.running=!data.done;state.status=data.status||state.status;updateAction(item,row,{done:data.done,status:state.status});
         });
         state.done=result.done;state.status=result.status||state.status;
       } catch(error) {if(!signal.aborted&&token===generation){state.running=false;state.done=true;state.status=error.message||'SOURCES_UNAVAILABLE';updateAction(item,row,{done:true,status:state.status});}}
       finally {state.running=false;if(token===generation)updateAction(item,row,{done:state.done,status:state.status});}
-    })();return state.promise;
+    },signal,mode==='deep').catch(()=>{});return state.promise;
   }
 
   function appendWhen(info,item){
@@ -111,11 +124,11 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
     const right=element('div','event-actions'),state=element('span','event-state');state.setAttribute('aria-live','polite');
     const action=element('button','text-action event-action','CHECK SOURCES');action.type='button';right.append(state,action);
     const list=element('div','source-list');list.hidden=!expanded;heading.append(info,right);article.append(heading,list);article.classList.toggle('is-expanded',expanded);
-    const expandAndCheck=()=>{const open=!article.classList.contains('is-expanded');article.classList.toggle('is-expanded',open);titleButton.setAttribute('aria-expanded',String(open));list.hidden=!open;if(open){renderSources(item,article,latest.get(item.id)||[]);if(!bestPlayable(item.id)&&!['youtube','twitch'].includes(item.provider))sources(item,article,token,{mode:'deep'});}};
+    const expandAndCheck=()=>{const open=!article.classList.contains('is-expanded');article.classList.toggle('is-expanded',open);titleButton.setAttribute('aria-expanded',String(open));list.hidden=!open;if(open){renderSources(item,article,latest.get(item.id)||[]);if(!['youtube','twitch'].includes(item.provider)&&discoveryState.get(item.id)?.mode!=='deep')sources(item,article,token,{mode:'deep'});}};
     titleButton.addEventListener('click',expandAndCheck);
     action.addEventListener('click',()=>{const playable=bestPlayable(item.id);if(playable){onWatch(playable,latest.get(item.id)||[],item);return;}if(!['youtube','twitch'].includes(item.provider))sources(item,article,token,{mode:'deep'});});
     if(['youtube','twitch'].includes(item.provider)){latest.set(item.id,item.sources||[]);if(expanded)renderSources(item,article,item.sources||[]);updateAction(item,article,{done:true,status:item.sources?.length?'READY':'NO_WORKING_SOURCES'});}
-    else {updateAction(item,article);if(expanded)renderSources(item,article,latest.get(item.id)||[]);if(auto&&!bestPlayable(item.id))sources(item,article,token,{mode:'deep'});}
+    else {updateAction(item,article);if(expanded)renderSources(item,article,latest.get(item.id)||[]);if(auto&&!bestPlayable(item.id))sources(item,article,token,{mode:'light'});}
     return article;
   }
 
@@ -148,7 +161,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
   function orderedExplore(events){return [...events].sort((a,b)=>{const alive=a.status==='live',blive=b.status==='live';if(alive!==blive)return alive?-1:1;return Date.parse(a.startTime)-Date.parse(b.startTime);});}
   function presentExploreCategories(events){const present=new Set(events.map(eventCategory).filter(Boolean));return EVENT_CATEGORIES.filter(key=>present.has(key));}
   function renderExploreFilterButtons(events){filters.replaceChildren();const categories=presentExploreCategories(events),all=['ALL',...categories];for(const key of all){const button=element('button','explore-filter',key);button.type='button';const selected=selectedFilters.has('ALL')?key==='ALL':selectedFilters.has(key);button.classList.toggle('is-selected',selected);button.setAttribute('aria-pressed',String(selected));button.addEventListener('click',()=>{if(key==='ALL')selectedFilters=new Set(['ALL']);else {if(selectedFilters.has('ALL'))selectedFilters=new Set();if(selectedFilters.has(key))selectedFilters.delete(key);else selectedFilters.add(key);if(!selectedFilters.size)selectedFilters=new Set(['ALL']);}renderExploreFilterButtons(exploreEvents);renderExploreRows();});filters.append(button);}}
-  function renderExploreRows(){const title=results.querySelector('.results-title');[...results.children].forEach(node=>{if(node!==title)node.remove();});const visible=orderedExplore(exploreEvents).filter(event=>selectedFilters.has('ALL')||selectedFilters.has(eventCategory(event)));if(!visible.length){results.append(element('p','results-message','NO LIVE OR UPCOMING EVENTS FOUND.'));return;}const token=generation;for(const item of visible.slice(0,80))results.append(row(item,token,{auto:false,expanded:false}));}
+  function renderExploreRows(){const title=results.querySelector('.results-title');[...results.children].forEach(node=>{if(node!==title)node.remove();});const visible=orderedExplore(exploreEvents).filter(event=>selectedFilters.has('ALL')||selectedFilters.has(eventCategory(event)));if(!visible.length){results.append(element('p','results-message','NO LIVE OR UPCOMING EVENTS FOUND.'));return;}const token=generation;for(const item of visible)results.append(row(item,token,{auto:eligibleEvent(item),expanded:false}));}
   function explore(events=[]){input.value='';exploreEvents=orderedExplore(Array.isArray(events)?events:[]);selectedFilters=new Set(['ALL']);beginCustomResults('LIVE / UPCOMING','',true);renderExploreFilterButtons(exploreEvents);renderExploreRows();}
 
   async function search(value=input.value.trim(),navigate=true) {
@@ -162,7 +175,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
       if(totalTypes===1){if(liveEvents.length)title.textContent=`${q.toUpperCase()} EVENTS:`;else if(tv.length)title.textContent=`${q.toUpperCase()} TV:`;else title.textContent=`${q.toUpperCase()} MOVIES:`;}
       const notices={SCHEDULE_UNAVAILABLE:'PART OF THE LIVE SCHEDULE IS TEMPORARILY UNAVAILABLE.',TMDB_NOT_CONFIGURED:'TV / MOVIE SEARCH NEEDS THE TMDB TOKEN TO BE ADDED TO THE SERVER.',TMDB_UNAVAILABLE:'TV / MOVIE CATALOG IS TEMPORARILY UNAVAILABLE.'};
       for(const notice of [...new Set([...(data.notices||[]),...(live.notices||[])])])if(notices[notice])results.append(element('p','results-subtext',notices[notice]));
-      if(liveEvents.length){if(totalTypes>1)results.append(sectionLabel('LIVE'));const single=totalTypes===1&&liveEvents.length===1;for(const item of liveEvents.slice(0,12))results.append(row(item,token,{auto:false,expanded:single}));}
+      if(liveEvents.length){if(totalTypes>1)results.append(sectionLabel('LIVE'));const single=totalTypes===1&&liveEvents.length===1;for(const item of liveEvents)results.append(row(item,token,{auto:eligibleEvent(item),expanded:single}));}
       if(tv.length){if(totalTypes>1)results.append(sectionLabel('TV'));for(const show of tv)results.append(catalogTvRow(show));}
       if(movies.length){if(totalTypes>1)results.append(sectionLabel('MOVIES'));for(const movie of movies)results.append(row(movie,token,{auto:false,expanded:false}));}
       if(!liveEvents.length&&!tv.length&&!movies.length){results.append(element('p','results-message','NO RESULTS FOUND'));const parsed=parseQuery(q);if(live.complete&&parsed.kind==='matchup')results.append(element('p','results-subtext',`${parsed.teams.map(t=>t.name.toUpperCase()).join(' AND ')} ARE NOT CURRENTLY SCHEDULED TO PLAY IN THE AVAILABLE SCHEDULE.`));}
@@ -171,7 +184,7 @@ export function initSearch(onWatch,onNavigate=()=>{},onContentNavigate=()=>{}) {
 
 
   async function firstResolvedSource(item,signal,onUpdate){
-    const response=await sourceRequest(item,signal,'deep');if(!response.ok)throw new Error('SOURCES UNAVAILABLE');
+    const response=await sourceRequest(item,signal,'deep');if(!response.ok){let error;try{error=await response.json();}catch{}throw new Error(error?.code==='SOURCE_LIST_TOO_LARGE'?'SOURCE_LIST_TOO_LARGE':'SOURCES_UNAVAILABLE');}
     const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',last=[];
     try{
       while(true){

@@ -140,7 +140,7 @@ a { text-decoration: none; }
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: clamp(40px,6vh,88px) 0 clamp(34px,5vh,70px);
+  margin: clamp(12px,2vh,28px) 0 clamp(34px,5vh,70px);
   background: #050505;
   overflow: hidden;
 }
@@ -176,12 +176,13 @@ a { text-decoration: none; }
 
 .player-header {
   display:grid;
-  grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
+  grid-template-columns:minmax(0,1fr) auto;
   align-items:center;
   column-gap:12px;
 }
-.player-home-group {display:inline-flex;align-items:baseline;gap:.38em;justify-self:start;white-space:nowrap;}
+.player-home-group {min-width:0;display:inline-flex;align-items:baseline;gap:.38em;justify-self:start;white-space:nowrap;}
 .player-back {font-size:1em;}
+.player-refresh {display:flex;justify-content:center;margin:clamp(22px,4vh,42px) 0 12px;}
 #refresh-button {justify-self:center;}
 #sources-button {justify-self:end;}
 
@@ -217,7 +218,8 @@ a { text-decoration: none; }
 #live-button:not(:disabled):focus-visible { color: var(--bg); }
 .text-action:disabled { color: var(--muted); cursor: default; }
 [hidden] { display: none !important; }
-#tv-button.is-connected { text-decoration: underline; text-underline-offset: .2em; }
+#tv-button.is-connected,.text-action.is-active,.text-action.is-on,#live-button.is-live {background:var(--fg);color:var(--bg);text-decoration:none;outline:none;}
+.source-more {margin-top:14px;}
 .player-stage.is-casting #video { visibility: hidden; }
 .player-stage.is-casting .player-empty { z-index: 1; }
 .player-stage.is-casting .empty-copy { font-size: clamp(24px, 5vw, 64px); color: #707070; }
@@ -624,3 +626,5 @@ a { text-decoration: none; }
 .tvm-player-nav:not([hidden]) + .player-stage{margin-top:22px;}
 .custom-source-profile-line{grid-template-columns:112px minmax(0,1fr);}
 @media(max-width:720px){.custom-source-profile-line{grid-template-columns:98px minmax(0,1fr);}}
+
+@media(max-width:400px){.player-header{font-size:clamp(17px,5.2vw,22px);column-gap:16px;}.player-controls{column-gap:14px;}}

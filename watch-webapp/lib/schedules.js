@@ -43,6 +43,8 @@ async function data(provider,path,ttl=60000){
     const response=await fetchLimited(providerBase(provider)+path,{limit:10*1024*1024});
     const json=JSON.parse(response.body.toString());
     if(!Array.isArray(json.events))throw new Error('Invalid schedule');
+    const logo=provider.key!=='SOCCER'?json.leagues?.[0]?.logos?.[0]?.href:null;
+    if(logo)for(const event of json.events)event.leagueArtwork=logo;
     cache.set(key,{time:Date.now(),data:json});
     if(cache.size>160)cache.delete(cache.keys().next().value);
     return json;
@@ -75,6 +77,7 @@ export function normalizeEvent(raw,provider=byKey.get('NBA')){
     providerEventId:String(raw.id),
     sport:provider.sport,
     league:provider.league,
+    artwork:raw.leagueArtwork||raw.league?.logos?.[0]?.href||null,
     scheduleKey:provider.key,
     title,
     participants,

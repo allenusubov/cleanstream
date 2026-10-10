@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {safeURL, fetchLimited, AppError, WorkPool} from './network.js';
+import {currentSignal,aborted,abortable} from './discovery-control.js';
 const pool=new WorkPool(Math.max(1,Math.min(6,Number(process.env.BROWSER_CONCURRENCY)||4)));
 let browserPromise=null,chromiumPromise=null;
 async function chromiumApi(){
@@ -12,15 +13,18 @@ const HLS=/\.m3u8(?:$|\?)/i;
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
 export async function withPage(task) {
   return pool.run(async()=>{
-    let context;
+    let context,cancel;const signal=currentSignal();
     try {
+      aborted(signal);
       // Keep one Chromium process warm for the lifetime of a Cloud Run instance.
       // Contexts are still isolated and closed after every job.
       const chromium=await chromiumApi();
       browserPromise ||= chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE_PATH || undefined,args:['--no-sandbox','--disable-dev-shm-usage','--disable-gpu']});
-      const browser=await browserPromise;
+      const browser=await abortable(browserPromise,signal);
       context=await browser.newContext({serviceWorkers:'block',acceptDownloads:false,
         userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'});
+      cancel=()=>context?.close().catch(()=>{});
+      signal?.addEventListener('abort',cancel,{once:true});aborted(signal);
       context.setDefaultTimeout(1200);
       let page=null, requests=0;
       context.on('page',p=>{if(page && p!==page) p.close().catch(()=>{});});
@@ -33,6 +37,7 @@ export async function withPage(task) {
       const timer=setTimeout(()=>context.close().catch(()=>{}),16000);
       try { return await task(page); } finally {clearTimeout(timer);}
     } finally {
+      signal?.removeEventListener('abort',cancel);
       await context?.close().catch(()=>{});
     }
   });
@@ -155,7 +160,7 @@ export async function validate(item,origin,{progress=false,depth=0}={}) {
   }
   if(progress && playlist.live) {
     if(playlist.duration>20) throw new AppError('SOURCE_UNAVAILABLE',422);
-    await delay(Math.max(1000,playlist.duration*1100));
+    await delay(Math.max(1000,playlist.duration*1100),undefined,{signal:currentSignal()});
     const response=await fetchLimited(url,{headers,limit:512000});
     castEligible=cors(response,origin)&&castEligible;
     const next=parsePlaylist(response.body.toString(),response.url);

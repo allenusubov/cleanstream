@@ -1,6 +1,7 @@
+import {mergeProviders} from './provider-registry.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import {setTimeout as delay} from 'node:timers/promises';
+import {eachConcurrent,withSignal,aborted} from './discovery-control.js';
 import {normalize,matchesParticipants} from '../public/events.js';
 import {withPage,visit,resolve,validate,quickValidate} from './resolver.js';
 import {AppError,WorkPool,fetchLimited} from './network.js';
@@ -9,6 +10,7 @@ import {directoryLinks} from './directory.js';
 import {CATEGORY_ALIASES} from './source-profile.js';
 
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
+const builtinResults=new Map();
 const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map(), mirrorCache=new Map(), mirrorJobs=new Map(), routeHistory=new Map(), mirrorHistory=new Map(), eventPageHistory=new Map();
 const pool=new WorkPool(Math.max(1,Math.min(4,Number(process.env.EVENT_JOB_CONCURRENCY)||2)));
 const idFor=value=>crypto.createHash('sha256').update(value).digest('hex').slice(0,16);
@@ -312,12 +314,16 @@ export function siteSupportsEvent(site,event) {
   const eventKeys=[event?.league,event?.sport].map(value=>String(value||'').toUpperCase()).filter(Boolean);
   return leagues.includes('*')||eventKeys.some(key=>leagues.includes(key));
 }
-async function fastCandidates(target,origin) {
+async function fastCandidates(target,origin,onCandidate=()=>{}) {
   // Surface discovered direct media immediately; actual device playback is the
   // final compatibility test.
   const result=await resolve(target.url,origin,{progress:false});
-  const checks=await Promise.allSettled(result.candidates.slice(0,8).map(candidate=>quickValidate(candidate)));
-  return checks.filter(item=>item.status==='fulfilled').map(item=>({...item.value,sourceUrl:target.parentUrl||target.url}));
+  const candidates=result.candidates.slice(0,8);
+  for(const [i,candidate] of candidates.entries())onCandidate({...candidate,sourceUrl:target.parentUrl||target.url},i);
+  const checks=await Promise.allSettled(candidates.map(candidate=>quickValidate(candidate)));
+  aborted();
+  for(const [i,check] of checks.entries())if(check.status==='rejected'&&['NO_MEDIA','DIRECT_BLOCKED'].includes(check.reason?.code))onCandidate({...candidates[i],unavailable:true},i);
+  return checks.flatMap((item,i)=>item.status==='fulfilled'?[{...item.value,sourceUrl:target.parentUrl||target.url}]:['NO_MEDIA','DIRECT_BLOCKED'].includes(item.reason?.code)?[]:[{...candidates[i],sourceUrl:target.parentUrl||target.url,provisional:true}]);
 }
 function siteStats(site,event){
   const key=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
@@ -351,7 +357,7 @@ function pendingSource(site,target,event,score=25){
     pending:true,deepVerified:false,mirrorLabel:target.text||'',sourceRoot:site.sourceRoot||site.indexUrls?.[0]||'',sourceUrl:target.kind==='page'?target.url:(target.parentUrl||target.url)
   };
 }
-export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
+export function eventJob(event,origin,customSites=[],{mode='deep',resume=false}={}) {
   if(!watchable(event)) throw new AppError('EVENT_UNAVAILABLE',409);
   const light=mode==='light';
   const customKey=idFor(customSites.map(site=>JSON.stringify({
@@ -360,15 +366,18 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
   const baseKey=`${origin}|${event.id}|${customKey}`;
   const key=`${baseKey}|${light?'light':'deep'}`;
   const old=jobs.get(key);
-  if(old && (!old.done || old.expiresAt>Date.now())) return old;
-  const seed=!light?jobs.get(`${baseKey}|light`)?.sources||[]:[];
-  const job={sources:seed.map(source=>({...source})),done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false,mode:light?'light':'deep'};
-  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status,mode:job.mode});
+  if(old && !old.controller?.signal.aborted && (!old.done || (!resume&&old.expiresAt>Date.now()))) return old;
+  const seed=(resume?old?.sources:!light?jobs.get(`${baseKey}|light`)?.sources:[])||[];
+  const controller=new AbortController();
+  const job={sources:seed.filter(source=>source.expiresAt>Date.now()).map(source=>({...source})),done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false,mode:light?'light':'deep',controller,checked:resume?old?.cursor||0:0,total:0,partial:false,cursor:resume?old?.cursor||0:0,startedAt:0,firstSourceMs:null};
+  job.cancel=()=>controller.abort(new DOMException('Cancelled','AbortError'));
+  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status,mode:job.mode,checked:job.checked,total:job.total,partial:job.partial,firstSourceMs:job.firstSourceMs});
   job.publish=()=>{for(const listener of job.listeners)listener(job.snapshot());};
   const upsert=source=>{
     const existing=job.sources.find(item=>item.id===source.id);
     if(existing)Object.assign(existing,source);
     else job.sources.push(source);
+    if(job.firstSourceMs===null&&source.mediaUrl)job.firstSourceMs=Date.now()-job.startedAt;
     job.publish();
     return existing||source;
   };
@@ -377,45 +386,44 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
     if(index>=0){job.sources.splice(index,1);job.publish();}
   };
   job.start=()=>{
-    if(job.started)return;job.started=true;
-    job.promise=pool.run(async()=>{
-      const merged=[...customSites,...registry];
-      const byHost=new Map();
-      for(const site of merged){
-        if(!site?.enabled)continue;
-        const root=site.displayHost||site.indexUrls?.[0]||site.indexUrl||site.id;
-        let identity=String(root||site.id);
-        try{identity=new URL(identity).hostname.replace(/^www\./i,'');}catch{}
-        if(!byHost.has(identity))byHost.set(identity,site);
-      }
-      const sites=[...byHost.values()]
-        .filter(site=>(site.type==='streamed'||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event)&&sourceSupportState(site,event)!=='NO')
-        .sort((a,b)=>{
-          const ar=sourceSupportState(a,event)==='YES'?1:0,br=sourceSupportState(b,event)==='YES'?1:0;
-          return br-ar||sitePriority(b,event)-sitePriority(a,event);
-        });
+    if(job.started)return;job.started=true;job.startedAt=Date.now();
+    const budget=Math.max(5000,Math.min(120000,Number(process.env.DISCOVERY_TIMEOUT_MS)||45000));
+    const timer=setTimeout(()=>controller.abort(new Error('SEARCH_LIMIT_REACHED')),budget);
+    job.promise=withSignal(controller.signal,()=>pool.run(async()=>{
+      const sites=mergeProviders(registry,customSites).filter(site=>(site.type==='streamed'||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event));
+      job.total=sites.length;job.publish();
       let matched=0,unavailable=0;
       const checkSite=async site=>{
+        aborted();
+        const cacheKey=`${origin}|${event.id}|${site.id}`;
+        if(!site.custom){
+          const ready=(builtinResults.get(cacheKey)||[]).filter(source=>source.expiresAt>Date.now()+3000);
+          for(const source of ready)upsert({...source});
+          if(light&&ready.length){job.checked++;job.publish();return;}
+        }
         const [statsKey,stats]=siteStats(site,event);
         const mirrorKey=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
         const resolveTarget=async target=>{
           const pending=pendingSource(site,target,event,25+sitePriority(site,event));
           stats.attempts++;
           try{
-            const candidates=(await fastCandidates(target,origin)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
+            const publish=(media,index=0)=>{
+              const id=idFor(`${pending.id}|${media.mediaUrl}`);
+              upsert({...pending,...media,id,pending:false,unavailable:Boolean(media.unavailable),score:50,deepVerified:false});
+            };
+            const candidates=(await fastCandidates(target,origin,publish)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
             if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
             stats.success++;stats.totalMs+=candidates[0]?.startupMs||0;
             const durablePage=target.parentUrl||target.url;if(durablePage)eventPageHistory.set(`${site.id}|${event.id}`,{url:durablePage,time:Date.now()});
             const reliability=stats.success/stats.attempts;
             for(const [index,media] of candidates.entries()){
               const score=100+reliability*20-Math.min((media.startupMs||0)/1000,25)+Math.min((media.quality||0)/1080,1)*5-index*.25;
-              const id=index===0?pending.id:idFor(`${pending.id}|${media.mediaUrl}|${index}`);
+              const id=idFor(`${pending.id}|${media.mediaUrl}`);
               const active=upsert({...pending,...media,id,pending:false,unavailable:false,score,deepVerified:!media.isHls,verifiedAt:media.verifiedAt});
-              if(!light && !media.provisional && media.isHls && media.live && !active.deepVerified){
-                validate({url:media.mediaUrl,isHls:true},origin,{progress:true}).then(deep=>{
-                  Object.assign(active,{segmentDuration:deep.segmentDuration,quality:deep.quality||active.quality,deepVerified:true,verifiedAt:deep.verifiedAt,expiresAt:deep.expiresAt,score:active.score+4});
-                  job.publish();
-                }).catch(()=>{});
+              if(!site.custom){
+                const cached=builtinResults.get(cacheKey)||[];
+                builtinResults.set(cacheKey,[...cached.filter(value=>value.id!==active.id&&value.expiresAt>Date.now()),{...active}]);
+                if(builtinResults.size>300)builtinResults.delete(builtinResults.keys().next().value);
               }
             }
             if(target.text){const remembered=mirrorHistory.get(mirrorKey)||new Set();remembered.add(target.text);mirrorHistory.set(mirrorKey,remembered);}
@@ -430,26 +438,29 @@ export function eventJob(event,origin,customSites=[],{mode='deep'}={}) {
           for(const page of pagesToCheck){
             const baseTarget={kind:'page',url:page.url,text:'DEFAULT',parentUrl:page.url};
             defaultTasks.push(resolveTarget(baseTarget));
-            if(!light)mirrorTasks.push((async()=>{
+            if(!light)mirrorTasks.push(async()=>{
               const targets=await mirrorTargets(site,page,event,{light:false});
               const unique=[...new Map(targets.map(target=>[targetKey(target),{...target,parentUrl:page.url}])).values()].filter(target=>target.url!==page.url||target.kind!=='page');
-              await Promise.allSettled(unique.map(resolveTarget));
-            })());
+              await eachConcurrent(unique,2,resolveTarget);
+            });
           }
-          await Promise.allSettled([...defaultTasks,...mirrorTasks]);
+          await Promise.allSettled(defaultTasks);
+          if(!controller.signal.aborted)await eachConcurrent(mirrorTasks,1,task=>task());
+          aborted();
         }catch{unavailable++;}
-        finally{history.set(statsKey,stats);}
+        finally{history.set(statsKey,stats);if(!controller.signal.aborted){job.checked++;job.publish();}}
       };
-      const known=sites.filter(site=>sourceSupportState(site,event)==='YES');
-      const fallback=sites.filter(site=>sourceSupportState(site,event)!=='YES');
-      const primary=known.slice(0,6);
-      const secondary=[...known.slice(6),...fallback];
-      const primaryWork=Promise.allSettled(primary.map(checkSite));
-      const secondaryWork=(async()=>{if(primary.length)await delay(550);return Promise.allSettled(secondary.map(checkSite));})();
-      await Promise.allSettled([primaryWork,secondaryWork]);
+      // Independent bounded lanes: custom-site volume cannot hold up built-ins.
+      // Every site remains eligible; stale learned NO is not an exclusion.
+      const builtins=sites.filter(site=>!site.custom),custom=sites.filter(site=>site.custom);
+      const builtinWork=eachConcurrent(builtins,2,checkSite);
+      const customWork=eachConcurrent(custom,2,checkSite,{start:job.cursor,onComplete:cursor=>{job.cursor=cursor;}});
+      await Promise.allSettled([builtinWork,customWork]);
+      job.partial=controller.signal.aborted&&job.checked<job.total;
       const ready=job.sources.filter(source=>source.mediaUrl&&!source.unavailable).length;
-      job.status=ready?'READY':unavailable===sites.length&&sites.length?'SOURCES_UNAVAILABLE':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
-    }).catch(error=>{job.status=error.code||'SOURCES_UNAVAILABLE';}).finally(()=>{
+      job.status=ready?'READY':job.partial?'SEARCH_LIMIT_REACHED':unavailable===sites.length&&sites.length?'SOURCES_UNAVAILABLE':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
+    })).catch(error=>{job.partial=true;job.status=job.sources.length?'READY':error.code||'SEARCH_LIMIT_REACHED';}).finally(()=>{
+      clearTimeout(timer);
       job.done=true;job.expiresAt=Date.now()+(job.sources.some(source=>source.mediaUrl)?60000:30000);job.publish();
       if(jobs.size>300)for(const [k,v] of jobs)if(v.done&&v.expiresAt<Date.now())jobs.delete(k);
     });

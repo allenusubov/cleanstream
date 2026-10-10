@@ -1,3 +1,5 @@
+import {eventMetadata,updatePlaybackMetadata} from './playback-metadata.js';
+import {boundedCastLoad} from './cast-operation.js';
 import {initSearch} from './search.js';
 import {YouTubePlayer} from './youtube-player.js';
 import {TwitchPlayer} from './twitch-player.js';
@@ -58,6 +60,8 @@ let castContext = null;
 let remotePlayer = null;
 let remoteController = null;
 let castLoading = false;
+let castLoadVersion=0;
+let desiredCastItem=null;
 let castLoadPromise = null;
 let tvMode = null;
 let nativeProbeAt = 0;
@@ -86,6 +90,7 @@ const isYouTube=()=>candidate?.provider==='youtube';
 const isTwitch=()=>candidate?.provider==='twitch';
 const isEmbedded=()=>isYouTube()||isTwitch();
 const friendly = {
+  SOURCE_LIST_TOO_LARGE:'SOURCE LIST TOO LARGE — EXPORT AND REDUCE IT',
   INVALID_URL:'ENTER A VALID PUBLIC LINK', ENTER_EVENT:'ENTER AN EVENT',
   SOURCE_UNAVAILABLE:"STREAM UNAVAILABLE — THIS SOURCE ISN'T WORKING RIGHT NOW",
   NO_MEDIA:"NO PLAYABLE VIDEO FOUND",
@@ -93,17 +98,18 @@ const friendly = {
   SOURCE_FROZEN:'STREAM UNAVAILABLE — THIS SOURCE HAS STOPPED UPDATING',
   DIRECT_ONLY:'THIS STREAM NEEDS TO BE OPENED AGAIN', NOT_STARTED:'THIS EVENT HAS NOT STARTED',
   CAST_UNAVAILABLE:'THIS SOURCE IS UNAVAILABLE ON YOUR TV',
+  CAST_TIMED_OUT:'TV DID NOT RESPOND — TRY CAST AGAIN',
   YOUTUBE_UNAVAILABLE:'YOUTUBE PLAYBACK UNAVAILABLE — TRY THE SOURCE LINK',
   YOUTUBE_EMBED_BLOCKED:'THIS VIDEO MUST BE WATCHED ON YOUTUBE — USE SOURCE',
   TWITCH_UNAVAILABLE:'TWITCH PLAYBACK UNAVAILABLE — TRY THE SOURCE LINK'
 };
 const search = initSearch(async (item, items, event) => {
-  currentEvent=event; alternatives=items; failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;
+  search.stop();currentEvent=event; alternatives=items; failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;
   sourceUrl=item.sourceUrl;streamInput.value=sourceUrl;
   navigate({view:'player',url:sourceUrl,q:search.query,event:event.id,live:['youtube','twitch'].includes(item.provider)?item.live:undefined,tvm:event?.contentType==='tvm'?event:null});
   showView('player');userPaused=false;
   syncTvmPlayerNav();
-  const toTV=casting();
+  const toTV=castConnected();
   await runOperation(async signal => {
     let choices=[item,...items.filter(x=>x.id!==item.id)];
     for(const choice of choices) {
@@ -374,6 +380,7 @@ function readable(error) {
   return 'STREAM UNAVAILABLE — TRY REFRESH OR ANOTHER SOURCE';
 }
 async function recoverStream() {
+  if(document.hidden||video.webkitCurrentPlaybackTargetIsWireless)return;
   if(recovering || busy || userPaused || !candidate || Date.now()-lastRecovery<15000)return;
   if(++recoveryCycles>4){userPaused=true;say("NO WORKING SOURCES — PRESS REFRESH TO TRY AGAIN");return;}
   recovering=true;lastRecovery=Date.now();
@@ -595,10 +602,11 @@ function stopCastForRouteExit(){
   castOwned=false;
   Promise.resolve(castContext.endCurrentSession(true)).catch(()=>{});
 }
-function casting() {
+function castConnected() {
   return Boolean(castSession() && remotePlayer?.isMediaLoaded &&
     remotePlayer.mediaInfo?.customData?.cleanStreamOrigin === location.origin);
 }
+function casting(){return castConnected()&&remotePlayer.mediaInfo?.customData?.sourceUrl===sourceUrl;}
 function setBusy(value) {
   busy = value;
   refreshButton.disabled = value || !sourceUrl;
@@ -629,7 +637,7 @@ function latestLocalPosition() {
 function knownLive() {
   if(isYouTube())return youtube.live||candidate?.live===true;
   if(isTwitch())return candidate?.live===true;
-  return localLive||candidate?.live===true||video.duration===Infinity||Boolean(casting()&&remotePlayer?.liveSeekableRange&&!remotePlayer.liveSeekableRange.isLiveDone);
+  return localLive||candidate?.live===true||(candidate?.live!==false&&currentEvent?.status==='live')||video.duration===Infinity||Boolean(casting()&&remotePlayer?.liveSeekableRange&&!remotePlayer.liveSeekableRange.isLiveDone);
 }
 async function waitForLocalLiveTarget(timeout=2500) {
   const started=Date.now();
@@ -648,6 +656,11 @@ function syncControls() {
   const onTV = casting();
   const paused = onTV ? remotePlayer.isPaused : isYouTube()?youtube.paused:isTwitch()?twitch.paused:video.paused;
   playButton.textContent = paused ? 'PLAY' : 'PAUSE';
+  playButton.classList.toggle('is-active',!paused);playButton.setAttribute('aria-pressed',String(!paused));
+  const muted=onTV?remotePlayer.isMuted:isYouTube()?youtube.muted:isTwitch()?twitch.muted:video.muted;
+  muteButton.classList.toggle('is-active',Boolean(muted));muteButton.setAttribute('aria-pressed',String(Boolean(muted)));
+  $('#fullscreen-button').classList.toggle('is-active',Boolean(document.fullscreenElement));
+  updatePlaybackMetadata(currentEvent,candidate,{active:playerView.classList.contains('is-active')&&Boolean(candidate),paused});
   muteButton.textContent = (onTV ? remotePlayer.isMuted : isYouTube()?youtube.muted:isTwitch()?twitch.muted:video.muted) ? 'UNMUTE' : 'MUTE';
   const target = onTV ? remoteLivePosition() : latestLocalPosition();
   const position = onTV ? remotePlayer.currentTime : isYouTube()?youtube.time:video.currentTime;
@@ -823,7 +836,7 @@ async function openStream(push=true,restoreLive=null,restoreEvent=null) {
   sourceUrl = url.href;
   showView('player');syncTvmPlayerNav();
   if(push)navigate({view:'player',url:sourceUrl,tvm:currentEvent?.contentType==='tvm'?currentEvent:null});
-  const toTV = casting();
+  const toTV = castConnected();
   await runOperation(async signal => {
     if(restoreLive!==null) {
       const items=await apiResolve(signal);if(items[0]?.provider==='youtube' && items[0].live===null)items[0].live=restoreLive;
@@ -834,7 +847,7 @@ async function openStream(push=true,restoreLive=null,restoreEvent=null) {
 }
 async function refreshStream() {
   if (busy || !sourceUrl) return;
-  const toTV = casting();
+  const toTV = castConnected();
   userPaused=false;recoveryAttempts=0;recoveryCycles=0;failedSources.clear();
   await runOperation(async signal => {
     if (candidate) {
@@ -855,7 +868,7 @@ function updateTVButton() {
   tvMode = isEmbedded()?null:chromium?(castReady?'cast':null):airplay?'airplay':castReady?'cast':null;
   tvButton.hidden = !tvMode;
   tvButton.textContent = tvMode === 'airplay' ? 'AIRPLAY' : 'CAST';
-  tvButton.classList.toggle('is-connected', casting() || Boolean(video.webkitCurrentPlaybackTargetIsWireless));
+  tvButton.classList.toggle('is-connected', castConnected() || Boolean(video.webkitCurrentPlaybackTargetIsWireless));
   tvButton.disabled = busy || castLoading || !candidate;
   tvButton.title = tvMode === 'cast' ? 'Choose a Google Cast device' : 'Choose an AirPlay device';
 }
@@ -869,6 +882,7 @@ function mediaMime(item) {
 async function loadOnTV(item, signal) {
   const session = castSession();
   if (!session) throw new Error('NO CAST DEVICE CONNECTED');
+  const loadVersion=++castLoadVersion;desiredCastItem=item;
   castLoading = true;
   updateTVButton();
   try {
@@ -879,27 +893,36 @@ async function loadOnTV(item, signal) {
     const media = new chrome.cast.media.MediaInfo(new URL(item.mediaUrl, location.href).href, mediaMime(item));
     media.streamType = live ? chrome.cast.media.StreamType.LIVE : chrome.cast.media.StreamType.BUFFERED;
     media.metadata = new chrome.cast.media.GenericMediaMetadata();
-    media.metadata.title = currentEvent?.title || 'CLEAN STREAM';
-    media.customData = {cleanStreamOrigin:location.origin, sourceUrl, isHls:item.isHls, segmentDuration, live, id:item.id, castEligible:item.castEligible, expiresAt:item.expiresAt};
+    const metadata=eventMetadata(currentEvent,item,location.origin);
+    media.metadata.title=metadata.title;media.metadata.subtitle=metadata.artist;
+    if(metadata.artwork.length)media.metadata.images=metadata.artwork.map(image=>new chrome.cast.Image(image.src));
+    media.customData = {event:currentEvent,loadVersion:loadVersion,cleanStreamOrigin:location.origin, sourceUrl, isHls:item.isHls, segmentDuration, live, id:item.id, castEligible:item.castEligible, expiresAt:item.expiresAt};
     const request = new chrome.cast.media.LoadRequest(media);
     request.autoplay = true;
     if (!live && video.currentTime > 0) request.currentTime = video.currentTime;
-    await session.loadMedia(request);
+    await boundedCastLoad(session,request,{signal,onLateResolution:()=>{
+      if(loadVersion!==castLoadVersion&&desiredCastItem&&castOwned&&!castLoading&&playerView.classList.contains('is-active')&&castSession()===session)loadOnTV(desiredCastItem).catch(()=>say('TV CONNECTION INTERRUPTED — TRY CAST AGAIN'));
+    }});
+    if(loadVersion!==castLoadVersion||signal?.aborted)throw new DOMException('Cancelled','AbortError');
     castOwned=true;remoteProgress=Date.now();remotePosition=-1;userPaused=false;
     // Only stop the local download after the receiver accepts the media.
     destroyLocal();
     placeholder('PLAYING ON TV');
     say();
   } catch (error) {
-    console.warn('Cast load failed',error.code); throw new Error('CAST_UNAVAILABLE');
-  } finally { castLoading = false; syncControls(); }
+    if(error.name==='AbortError')throw error;
+    console.warn('Cast load failed',error.code);throw error.message==='CAST_TIMED_OUT'?error:new Error('CAST_UNAVAILABLE');
+  } finally {if(loadVersion===castLoadVersion){castLoading=false;syncControls();}}
 }
 function adoptCastMedia() {
   const media = castSession()?.getMediaSession()?.media;
   if (!media) return;
   try {
     const url = new URL(media.contentId);
-    if (media.customData?.cleanStreamOrigin !== location.origin || url.protocol !== 'https:') return;
+    const intended=new URL(location.href).searchParams.get('watch');
+    if(operation||busy||castLoading||!intended||intended!==media.customData?.sourceUrl||media.customData?.cleanStreamOrigin!==location.origin||url.protocol!=='https:')return;
+    if(currentEvent&&currentEvent.id!==media.customData?.event?.id)return;
+    currentEvent=media.customData?.event||currentEvent;
     candidate = {...media.customData, mediaUrl:url.href, isHls:Boolean(media.customData?.isHls), contentType:media.contentType};
     castOwned=true;remoteProgress=Date.now();userPaused=Boolean(remotePlayer?.isPaused);
     sourceUrl = media.customData?.sourceUrl || sourceUrl;
@@ -1060,7 +1083,7 @@ video.addEventListener('pause', () => {if(!busy && !recovering && !castLoading &
 setInterval(() => {
   if (!playerView.classList.contains('is-active')) return;
   syncControls();
-  if(!isEmbedded() && !userPaused && !busy && !recovering && !casting() && lastProgress && Date.now()-lastProgress>18000)recoverStream();
+  if(!isEmbedded() && !userPaused && !busy && !recovering && !casting() && !document.hidden && !video.webkitCurrentPlaybackTargetIsWireless && lastProgress && Date.now()-lastProgress>18000)recoverStream();
   if(!busy && !recovering && lastProgress && Date.now()-lastRecovery>60000 && !buffering){recoveryAttempts=0;recoveryCycles=0;}
   if(castOwned && castSession() && !busy && !castLoading && !recovering){
     if(remotePlayer?.isMediaLoaded && remotePlayer.isPaused)userPaused=true;
@@ -1070,7 +1093,7 @@ setInterval(() => {
   }
   // Native Safari doesn't expose HLS playlist state. Read the same small playlist
   // periodically to distinguish live from VOD/ended streams without re-extracting.
-  if (candidate?.isHls && !hls && !isEmbedded() && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
+  if (candidate?.isHls && !hls && !document.hidden && !isEmbedded() && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
     nativeProbeAt = Date.now(); nativeProbePending = true;
     const thisGeneration = generation;
     const controller = new AbortController();
@@ -1080,6 +1103,15 @@ setInterval(() => {
     }).catch(() => {}).finally(() => { clearTimeout(timer); nativeProbePending = false; });
   }
 }, 1000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){lastProgress=Date.now();syncControls();}});
+document.addEventListener('fullscreenchange',syncControls);
+if(navigator.mediaSession){
+  for(const [action,handler] of Object.entries({
+    play:()=>{if(casting()){if(remotePlayer.isPaused)remoteController.playOrPause();}else if(isYouTube())youtube.play();else if(isTwitch())twitch.play();else video.play().catch(()=>{});userPaused=false;},
+    pause:()=>{if(casting()){if(!remotePlayer.isPaused)remoteController.playOrPause();}else if(isYouTube())youtube.pause();else if(isTwitch())twitch.pause();else video.pause();userPaused=true;},
+    seekto:details=>{if(knownLive())liveButton.click();else if(casting()){remotePlayer.currentTime=details.seekTime;remoteController.seek();}else if(!isEmbedded())video.currentTime=details.seekTime;}
+  }))try{navigator.mediaSession.setActionHandler(action,handler);}catch{}
+}
 updateTVButton();
 syncControls();
 
@@ -1088,6 +1120,7 @@ if(window.__castReady || window.cast?.framework) window.__onGCastApiAvailable(tr
 function leavePlayer() {
   closeSourceMenu();
   operation?.abort();operation=null;userPaused=true;recovering=false;autoplayAdvancing=false;
+  castLoadVersion++;desiredCastItem=null;castLoading=false;
   destroyLocal();candidate=null;currentEvent=null;alternatives=[];sourceUrl='';hideTvmPlayerNav();setBusy(false);say();
 }
 function navigate(state,replace=false) {
@@ -1123,6 +1156,11 @@ async function restoreRoute() {
     if(tvmKind==='tv'&&tmdbId&&params.get('season')&&params.get('episode')){
       try{const response=await fetch(`/api/tvm/tv/${encodeURIComponent(tmdbId)}/episode/${encodeURIComponent(params.get('season'))}/${encodeURIComponent(params.get('episode'))}`,{cache:'no-store'});if(response.ok){const data=await response.json();restoreEvent=data.current;tvmEpisodeContext=data;}}catch{}
     }else if(tvmKind==='movie'&&tmdbId){try{const response=await fetch(`/api/tvm/movie/${encodeURIComponent(tmdbId)}`,{cache:'no-store'});if(response.ok)restoreEvent=await response.json();}catch{}}
+    if(!restoreEvent&&params.get('event')){
+      try{const response=await fetch(`/api/event/${encodeURIComponent(params.get('event'))}`);if(response.ok)restoreEvent=(await response.json()).event;}catch{}
+      if(!restoreEvent&&q){try{const response=await fetch(`/api/events?q=${encodeURIComponent(q)}`);if(response.ok)restoreEvent=(await response.json()).events?.find(item=>item.id===params.get('event'))||null;}catch{}}
+    }
+    if(token!==routeGeneration)return;
     await openStream(false,params.has('live')?params.get('live')==='1':null,restoreEvent);
     if(token!==routeGeneration)return;
     if(!restoreEvent&&q && params.get('event')) {
@@ -1132,7 +1170,7 @@ async function restoreRoute() {
         if(token===routeGeneration)currentEvent=data.events?.find(e=>e.id===params.get('event'))||null;
       }catch{}
     }
-    syncTvmPlayerNav(tvmEpisodeContext);
+    syncTvmPlayerNav(tvmEpisodeContext);syncControls();
   } else if(tvmKind==='tv'&&tmdbId) {
     showView('home');await search.showTv(tmdbId);
   } else if(params.get('explore')==='1') {

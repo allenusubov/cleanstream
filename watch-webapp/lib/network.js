@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import {currentSignal,aborted,abortable} from './discovery-control.js';
 
 export class AppError extends Error {
   constructor(code, status = 400) { super(code); this.code = code; this.status = status; }
@@ -20,19 +21,36 @@ export function privateAddress(input) {
   // Public IPv6 unicast only; excludes loopback, mapped/private and link-local ranges.
   return net.isIP(ip) !== 6 || !/^[23][0-9a-f]{3}:/.test(ip) || ip.startsWith('2001:db8:');
 }
-export async function safeURL(input) {
+export function publicURL(input) {
   let url;
-  try { url = new URL(input); } catch { throw new AppError('INVALID_URL'); }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
-      (url.port && !['80','443'].includes(url.port))) throw new AppError('INVALID_URL');
-  const host = url.hostname.replace(/^\[|\]$/g, '');
-  const records = net.isIP(host) ? [{address:host}] : await dns.lookup(host, {all:true});
-  if (!records.length || records.some(x => privateAddress(x.address))) throw new AppError('INVALID_URL');
+  try {url=new URL(input);}catch{throw new AppError('INVALID_URL');}
+  if(!['http:','https:'].includes(url.protocol)||url.username||url.password||(url.port&&!['80','443'].includes(url.port)))throw new AppError('INVALID_URL');
+  const host=url.hostname.replace(/^\[|\]$/g,'');
+  if(!host||/^(localhost|localhost\.localdomain)$|\.(localhost|local|internal)$/i.test(host)||(net.isIP(host)&&privateAddress(host)))throw new AppError('INVALID_URL');
   return url;
+}
+const dnsJobs=new Map();
+export async function safeURL(input) {
+  aborted();
+  const url=publicURL(input),host=url.hostname.replace(/^\[|\]$/g,'');
+  let records;
+  if(net.isIP(host))records=[{address:host}];
+  else {
+    if(!dnsJobs.has(host)){
+      // Share only simultaneous lookups. Check DNS again on each subsequent
+      // fetch/redirect instead of trusting a stale public-address result.
+      const job=dns.lookup(host,{all:true}).finally(()=>dnsJobs.delete(host));dnsJobs.set(host,job);
+    }
+    records=await abortable(dnsJobs.get(host),AbortSignal.any([AbortSignal.timeout(5000),...(currentSignal()?[currentSignal()]:[])]));
+  }
+  if(!records.length||records.some(x=>privateAddress(x.address)))throw new AppError('INVALID_URL');
+  aborted();return url;
 }
 export async function fetchLimited(input, {signal, limit = 1024 * 1024, headers = {}, partial = false} = {}) {
   const timeout = AbortSignal.timeout(10000);
-  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const signals=[timeout,signal,currentSignal()].filter(Boolean);
+  const combined=AbortSignal.any(signals);
+  aborted(combined);
   let url = input;
   for (let n = 0; n < 10; n++) {
     url = (await safeURL(url)).href;
@@ -68,14 +86,15 @@ export class WorkPool {
     this.active = 0;
     this.queue = [];
   }
-  async run(task) {
-    if (this.active >= this.max) await new Promise(resolve => this.queue.push(resolve));
+  async run(task,signal=currentSignal()) {
+    aborted(signal);
+    if(this.active>=this.max)await new Promise((resolve,reject)=>{
+      const entry=()=>{signal?.removeEventListener('abort',cancel);resolve();};
+      const cancel=()=>{const index=this.queue.indexOf(entry);if(index>=0)this.queue.splice(index,1);reject(signal.reason||new DOMException('Cancelled','AbortError'));};
+      this.queue.push(entry);signal?.addEventListener('abort',cancel,{once:true});
+    });
     else this.active++;
-    try { return await task(); }
-    finally {
-      const next = this.queue.shift();
-      if (next) next();
-      else this.active--;
-    }
+    try {aborted(signal);return await task();}
+    finally {const next=this.queue.shift();if(next)next();else this.active--;}
   }
 }
