@@ -1,13 +1,13 @@
 const logos={NBA:'nba',WNBA:'wnba',NFL:'nfl',NHL:'nhl',MLB:'mlb',UFC:'ufc',F1:'f1'};
 export function eventMetadata(event,candidate={},origin=''){
-  let title=event?.showTitle?event.showTitle+' · '+event.title:event?.title||candidate.title||candidate.creator||'CLEAN STREAM';
+  let title=event?.title||candidate.title||'CLEAN STREAM';
   const league=String(event?.league||event?.sport||'').toUpperCase();
   let artwork=logos[league]?'/artwork/'+logos[league]+'.png':event?.artwork||event?.logo||event?.image||candidate.artwork;
   if(typeof artwork==='object')artwork=artwork.src||artwork.url;
   if(!artwork&&logos[league])artwork='/artwork/'+logos[league]+'.png';
   if(!artwork)artwork='/artwork/clean-stream.png';
   try{artwork=new URL(artwork,origin||'https://cleanstream.cloud.run').href;}catch{artwork='';}
-  return {title:String(title),artist:league||candidate.creator||'',album:'',artwork:artwork?[{src:artwork,...(/\.png(?:$|\?)/i.test(artwork)?{type:'image/png'}:{})}]:[]};
+  return {title:String(title),artist:league||'',album:'',artwork:artwork?[{src:artwork,...(/\.png(?:$|\?)/i.test(artwork)?{type:'image/png'}:{})}]:[]};
 }
 let lastMetadataKey='';
 export function updatePlaybackMetadata(event,candidate,{active=true,paused=true}={}){

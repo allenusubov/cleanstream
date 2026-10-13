@@ -1,20 +1,15 @@
-import {parseQuery} from './public/events.js';
-import {isSportQuery} from './lib/catalog.js';
 import express from 'express';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {resolve,clearResolved} from './lib/resolver.js';
 import {knownEvents,getLiveWindow,getKnownEvent} from './lib/schedules.js';
 import {searchEvents} from './lib/live-search.js';
-import {youtubeId} from './public/youtube-url.js';
-import {resolveYouTube} from './lib/youtube.js';
-import {twitchChannel,twitchCandidate} from './public/twitch-url.js';
 import {eventJob} from './lib/discovery.js';
 import {AppError,safeURL} from './lib/network.js';
 import {customRegistry} from './lib/custom-sources.js';
 import {scanSourceProfile} from './lib/source-profile.js';
-import {searchTvm,tvDetails,tvSeason,movieDetails,episodeContext,tmdbConfigured} from './lib/tmdb.js';
-import {tvmSourceJob} from './lib/tvm-sources.js';
+import {requestErrorLog} from './lib/error-log.js';
+import {excludedPlatform} from './public/live-only.js';
 export const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
 app.set('trust proxy',1);
@@ -41,19 +36,9 @@ app.get('/api/search',async(req,res)=>{
   const query=String(req.query.q||'').trim().slice(0,100);
   if(!query)throw new AppError('ENTER_EVENT');
   res.setHeader('Cache-Control','no-store');
-  const parsed=parseQuery(query);
-  const sports=['league','sport','team','matchup'].includes(parsed.kind)||isSportQuery(query);
-  const [liveResult,tvmResult]=await Promise.allSettled([searchEvents(query),sports?Promise.resolve({tv:[],movies:[]}):searchTvm(query)]);
-  const live=liveResult.status==='fulfilled'?liveResult.value:{events:[],alternatives:[],complete:false,notices:['SCHEDULE_UNAVAILABLE']};
-  const tvm=tvmResult.status==='fulfilled'?tvmResult.value:{tv:[],movies:[]};
-  const notices=[...(live.notices||[])];
-  if(tvmResult.status==='rejected')notices.push(tmdbConfigured()?'TMDB_UNAVAILABLE':'TMDB_NOT_CONFIGURED');
-  res.json({live,tv:tvm.tv||[],movies:tvm.movies||[],notices:[...new Set(notices)]});
+  const live=await searchEvents(query);
+  res.json({live,notices:live.notices||[]});
 });
-app.get('/api/tvm/tv/:id',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await tvDetails(req.params.id));});
-app.get('/api/tvm/tv/:id/season/:season',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await tvSeason(req.params.id,req.params.season));});
-app.get('/api/tvm/tv/:id/episode/:season/:episode',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await episodeContext(req.params.id,req.params.season,req.params.episode));});
-app.get('/api/tvm/movie/:id',async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await movieDetails(req.params.id));});
 app.get('/api/live-window',async(req,res)=>{
   const hours=Math.max(1,Math.min(Number(req.query.hours)||24,168));
   res.setHeader('Cache-Control','no-store');
@@ -67,10 +52,6 @@ app.get('/api/event/:id',async(req,res)=>{
 });
 app.post('/api/resolve',async(req,res)=>{
   const url=String(req.body?.url||'').trim();
-  const youtube=youtubeId(url);
-  if(youtube)return res.json({sourceUrl:url,candidates:[await resolveYouTube(youtube)]});
-  const twitch=twitchChannel(url);
-  if(twitch)return res.json({sourceUrl:url,candidates:[twitchCandidate(twitch)]});
   if(req.body?.refresh) clearResolved(url,origin(req));
   res.setHeader('Cache-Control','no-store');
   res.json(await resolve(url,origin(req)));
@@ -123,23 +104,11 @@ app.post('/api/explore-sources',async(req,res)=>{
   res.on('close',()=>{closed=true;for(const fn of detach)fn();});
 });
 
-app.post('/api/tvm/sources',async(req,res)=>{
-  const item=req.body?.item;
-  const customSites=await customRegistry(req.body?.customSources||[]);
-  const job=tvmSourceJob(item,origin(req),customSites,{mode:req.body?.mode||'deep',resume:Boolean(req.body?.resume)});
-  res.setHeader('Content-Type','application/x-ndjson');
-  res.setHeader('Cache-Control','no-store, no-transform');
-  res.setHeader('X-Accel-Buffering','no');
-  res.flushHeaders();
-  const write=state=>{if(res.destroyed||res.writableEnded)return;res.write(JSON.stringify(state)+'\n');if(state.done)res.end();};
-  job.listeners.add(write);
-  const heartbeat=setInterval(()=>{if(!res.destroyed&&!res.writableEnded)res.write('{"type":"ping"}\n');},10000);
-  res.on('close',()=>{clearInterval(heartbeat);job.listeners.delete(write);setTimeout(()=>{if(!job.listeners.size&&!job.done)job.cancel?.();},250).unref();});
-  write(job.snapshot());job.start();
-});
 app.post('/api/source-test',async(req,res)=>{
   const raw=String(req.body?.url||'').trim();
-  const url=await safeURL(raw.includes('://')?raw:`https://${raw}`);
+  const input=raw.includes('://')?raw:`https://${raw}`;
+  if(excludedPlatform(input))throw new AppError('LIVE_AGGREGATORS_ONLY',422);
+  const url=await safeURL(input);
   const profile=await scanSourceProfile(url.href,req.body?.profile||{});
   let finalUrl=url;try{finalUrl=await safeURL(profile.url||url.href);}catch{}
   res.setHeader('Cache-Control','no-store');
@@ -150,9 +119,13 @@ app.post('/api/source-test',async(req,res)=>{
 });
 // Deliberately disabled: this app never relays video bytes to viewers or TVs.
 app.use('/api/media',(_req,res)=>res.status(410).json({code:'DIRECT_ONLY'}));
+app.use('/api/tvm',(_req,res)=>res.status(410).json({code:'LIVE_AGGREGATORS_ONLY'}));
+// Uploading replacement files in GitHub does not delete old files. Never serve
+// obsolete player modules even if they remain in an existing checkout.
+app.use(['/youtube-player.js','/twitch-player.js','/youtube-url.js','/twitch-url.js'],(_req,res)=>res.sendStatus(404));
 app.use(express.static(path.join(root,'public'),{maxAge:0}));
-app.use((error,_req,res,_next)=>{
-  console.error('Request failed',error.code||error.name);
+app.use((error,req,res,_next)=>{
+  console.error(JSON.stringify(requestErrorLog(error,req)));
   if(res.headersSent) return res.end();
   res.status(error.status||500).json({code:error.type==='entity.too.large'?'SOURCE_LIST_TOO_LARGE':error.code||'SOURCE_UNAVAILABLE'});
 });

@@ -1,10 +1,8 @@
 import {eventMetadata,updatePlaybackMetadata} from './playback-metadata.js';
 import {boundedCastLoad} from './cast-operation.js';
 import {initSearch} from './search.js';
-import {YouTubePlayer} from './youtube-player.js';
-import {TwitchPlayer} from './twitch-player.js';
 import {livePosition} from './live-position.js';
-import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,cleanupCustomSourceProfiles,removeCustomSource,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
+import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,cleanupCustomSourceProfiles,removeCustomSource,removeCustomSources,saveCustomSources,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
 import {loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents,compactEventTitle} from './event-preferences.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
@@ -40,10 +38,13 @@ const importSourcesButton=$('#import-sources');
 const exportSourcesButton=$('#export-sources');
 const shareSourcesButton=$('#share-sources');
 const importSourcesFile=$('#import-sources-file');
-const tvmPlayerNav=$('#tvm-player-nav');
-const previousEpisodeButton=$('#previous-episode');
-const nextEpisodeButton=$('#next-episode');
-const autoplayButton=$('#autoplay-button');
+const selectAllSourcesButton=$('#select-all-sources');
+const clearSourceSelectionButton=$('#clear-source-selection');
+const deleteSelectedSourcesButton=$('#delete-selected-sources');
+const undoSourceDeletionButton=$('#undo-source-deletion');
+const selectionCount=$('#source-selection-count');
+let selectedSources=new Set();
+let deletedSources=[];
 
 let hls = null;
 let candidate = null;
@@ -81,14 +82,6 @@ let liveWindowEvents=[];
 let liveWindowUpdated=0;
 let tickerTimer=0,tickerPauseUntil=0,tickerSetWidth=0,tickerNormalizing=false,tickerAutoScrolling=false,tickerAutoScrollAt=0,tickerHovered=false,tickerAnimating=false,tickerAnimationFrame=0,tickerEventCount=0,tickerSuppressClickUntil=0;
 let currentSettingsSection='menu';
-let tvmEpisodeContext=null;
-let autoplayEnabled=localStorage.getItem('cleanstream.tvm.autoplay')==='1';
-let autoplayAdvancing=false;
-const youtube=new YouTubePlayer($('#youtube-player'),()=>syncControls(),error=>say(readable(error)));
-const twitch=new TwitchPlayer($('#twitch-player'),()=>syncControls(),error=>say(readable(error)));
-const isYouTube=()=>candidate?.provider==='youtube';
-const isTwitch=()=>candidate?.provider==='twitch';
-const isEmbedded=()=>isYouTube()||isTwitch();
 const friendly = {
   SOURCE_LIST_TOO_LARGE:'SOURCE LIST TOO LARGE — EXPORT AND REDUCE IT',
   INVALID_URL:'ENTER A VALID PUBLIC LINK', ENTER_EVENT:'ENTER AN EVENT',
@@ -99,16 +92,16 @@ const friendly = {
   DIRECT_ONLY:'THIS STREAM NEEDS TO BE OPENED AGAIN', NOT_STARTED:'THIS EVENT HAS NOT STARTED',
   CAST_UNAVAILABLE:'THIS SOURCE IS UNAVAILABLE ON YOUR TV',
   CAST_TIMED_OUT:'TV DID NOT RESPOND — TRY CAST AGAIN',
-  YOUTUBE_UNAVAILABLE:'YOUTUBE PLAYBACK UNAVAILABLE — TRY THE SOURCE LINK',
-  YOUTUBE_EMBED_BLOCKED:'THIS VIDEO MUST BE WATCHED ON YOUTUBE — USE SOURCE',
-  TWITCH_UNAVAILABLE:'TWITCH PLAYBACK UNAVAILABLE — TRY THE SOURCE LINK'
+  BROWSER_UNAVAILABLE:'SOURCE CHECKER IS RESTARTING — PRESS REFRESH',
+  SOURCE_TIMEOUT:'SOURCE TOOK TOO LONG — TRY REFRESH OR ANOTHER SOURCE',
+  SOURCE_ACCESS_BLOCKED:'THIS SITE BLOCKED THE SOURCE CHECKER — TRY ANOTHER SOURCE',
+  LIVE_AGGREGATORS_ONLY:'USE A LIVE EVENT LINK FROM AN AGGREGATOR'
 };
 const search = initSearch(async (item, items, event) => {
   search.stop();currentEvent=event; alternatives=items; failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;
   sourceUrl=item.sourceUrl;streamInput.value=sourceUrl;
-  navigate({view:'player',url:sourceUrl,q:search.query,event:event.id,live:['youtube','twitch'].includes(item.provider)?item.live:undefined,tvm:event?.contentType==='tvm'?event:null});
+  navigate({view:'player',url:sourceUrl,q:search.query,event:event.id});
   showView('player');userPaused=false;
-  syncTvmPlayerNav();
   const toTV=castConnected();
   await runOperation(async signal => {
     let choices=[item,...items.filter(x=>x.id!==item.id)];
@@ -119,40 +112,8 @@ const search = initSearch(async (item, items, event) => {
   });
 },q=>{
   leavePlayer();showView('home');navigate({view:'search',q});
-},route=>{
-  leavePlayer();showView('home');navigate(route);
 });
 
-function isTvmEpisode(item=currentEvent){return item?.contentType==='tvm'&&item.kind==='tv'&&Number(item.tmdbId)&&Number(item.seasonNumber)&&Number(item.episodeNumber);}
-function updateAutoplayButton(){
-  if(!autoplayButton)return;autoplayButton.textContent=`AUTOPLAY ${autoplayEnabled?'ON':'OFF'}`;autoplayButton.classList.toggle('is-on',autoplayEnabled);autoplayButton.setAttribute('aria-pressed',String(autoplayEnabled));
-}
-function hideTvmPlayerNav(){tvmEpisodeContext=null;if(tvmPlayerNav)tvmPlayerNav.hidden=true;}
-async function syncTvmPlayerNav(context=null){
-  updateAutoplayButton();
-  if(!isTvmEpisode()){hideTvmPlayerNav();return;}
-  const currentKey=`${currentEvent.tmdbId}:${currentEvent.seasonNumber}:${currentEvent.episodeNumber}`;
-  if(tvmPlayerNav)tvmPlayerNav.hidden=false;previousEpisodeButton.disabled=true;nextEpisodeButton.disabled=true;
-  try{
-    const data=context||await (await fetch(`/api/tvm/tv/${encodeURIComponent(currentEvent.tmdbId)}/episode/${encodeURIComponent(currentEvent.seasonNumber)}/${encodeURIComponent(currentEvent.episodeNumber)}`,{cache:'no-store'})).json();
-    if(!isTvmEpisode()||currentKey!==`${currentEvent.tmdbId}:${currentEvent.seasonNumber}:${currentEvent.episodeNumber}`)return;
-    tvmEpisodeContext=data;previousEpisodeButton.disabled=!data.previous;nextEpisodeButton.disabled=!data.next;
-  }catch{tvmEpisodeContext=null;}
-}
-async function playTvmAdjacent(direction,{replace=false}={}){
-  if(!isTvmEpisode()||autoplayAdvancing||busy)return;
-  if(!tvmEpisodeContext)await syncTvmPlayerNav();
-  const target=direction==='previous'?tvmEpisodeContext?.previous:tvmEpisodeContext?.next;if(!target){say(direction==='previous'?'NO PREVIOUS EPISODE':'NO NEXT EPISODE');return;}
-  autoplayAdvancing=true;userPaused=false;placeholder(direction==='previous'?'LOADING PREVIOUS EPISODE':'LOADING NEXT EPISODE');say('CHECKING SOURCES');
-  try{
-    await runOperation(async signal=>{
-      const found=await search.resolveFirstSource(target,signal);if(!found.length)throw new Error('SOURCE_UNAVAILABLE');
-      currentEvent=target;alternatives=found;failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;sourceUrl=found[0].sourceUrl;streamInput.value=sourceUrl;
-      navigate({view:'player',url:sourceUrl,q:target.showTitle||search.query,event:target.id,tvm:target},replace);
-      await playItem(found[0],signal,Boolean(casting()));syncTvmPlayerNav();
-    });
-  }finally{autoplayAdvancing=false;}
-}
 function sourceKey(item){return item?.id||item?.mediaUrl||item?.sourceUrl||'';}
 function sourceLabel(item,index=0){
   if(item?.displayName||item?.name)return String(item.displayName||item.name).toUpperCase();
@@ -164,7 +125,7 @@ function playerSources(){
   const all=[candidate,...alternatives,...(currentEvent?search.getSources(currentEvent.id):[])].filter(Boolean);
   const map=new Map();
   for(const item of all){
-    if(!(item.mediaUrl||['youtube','twitch'].includes(item.provider)))continue;
+    if(!item.mediaUrl)continue;
     const key=sourceKey(item);if(key&&!map.has(key))map.set(key,item);
   }
   return [...map.values()];
@@ -356,11 +317,6 @@ exploreButton.addEventListener('click',async()=>{
 });
 async function playItem(item,signal,toTV=false) {
   sourceUrl=item.sourceUrl||sourceUrl;
-  if(['youtube','twitch'].includes(item.provider)) {
-    // A video playing on a receiver must not overlap a new embedded player.
-    if(casting())castContext.endCurrentSession(true);
-    await attachLocal(item,signal);userPaused=false;return;
-  }
   if(item.expiresAt && item.expiresAt<Date.now()) {
     const data=await apiResolve(signal,true);
     item={...item,...data[0]};
@@ -488,7 +444,7 @@ function profileEditor(row,item) {
   const old=row.querySelector('.custom-source-editor');if(old){old.remove();return;}
   const editor=document.createElement('form');editor.className='custom-source-editor';
   const textarea=document.createElement('textarea');textarea.rows=4;textarea.spellcheck=false;textarea.value=profileLines(item);
-  textarea.placeholder='TV /tv\nMOVIES /movies\nSEARCH /search?q={query}\nNBA /#nba';
+  textarea.placeholder='NBA /#nba\nNFL /nfl\nEVENTS /live\nSEARCH /search?q={query}';
   const buttons=document.createElement('div');buttons.className='custom-source-editor-actions';
   const save=document.createElement('button');save.type='submit';save.className='text-action';save.textContent='SAVE';
   const cancel=document.createElement('button');cancel.type='button';cancel.className='text-action';cancel.textContent='CANCEL';cancel.addEventListener('click',()=>editor.remove());
@@ -498,9 +454,7 @@ function profileEditor(row,item) {
   row.append(editor);textarea.focus();
 }
 async function testCustomSourceProfile(item){
-  // Purge stale content-detail routes before using the saved profile as TEST hints.
-  // This prevents an old Paw Patrol / individual episode URL from becoming a seed
-  // on every future scan.
+  // Keep reusable category/index routes as TEST hints.
   const cleaned=cleanupCustomSourceProfiles(item.url);
   const current=cleaned.items.find(source=>source.url===item.url)||item;
   const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
@@ -563,11 +517,38 @@ function importSharedSourcesFromHash(){
   history.replaceState(history.state,'',location.pathname+location.search);return true;
 }
 
+function syncSourceSelection(){
+  const items=loadCustomSources(),urls=new Set(items.map(item=>item.url));
+  selectedSources=new Set([...selectedSources].filter(url=>urls.has(url)));
+  selectionCount.textContent=`${selectedSources.size} SELECTED`;
+  selectAllSourcesButton.disabled=!items.length;
+  clearSourceSelectionButton.disabled=!selectedSources.size;
+  deleteSelectedSourcesButton.disabled=!selectedSources.size;
+  deleteSelectedSourcesButton.textContent=selectedSources.size?`DELETE SELECTED (${selectedSources.size})`:'DELETE SELECTED';
+  undoSourceDeletionButton.hidden=!deletedSources.length;
+  settingsList.querySelectorAll('.custom-source-select').forEach(input=>{
+    input.checked=selectedSources.has(input.value);input.closest('.custom-source-row').classList.toggle('is-selected',input.checked);
+  });
+}
+function deleteSelectedSources(){
+  deletedSources=loadCustomSources().filter(item=>selectedSources.has(item.url));
+  if(!deletedSources.length)return;
+  removeCustomSources(selectedSources);selectedSources.clear();renderSettingsSources();
+  settingsMessage.textContent=`${deletedSources.length} SOURCE${deletedSources.length===1?'':'S'} DELETED`;
+}
+function undoSourceDeletion(){
+  const current=loadCustomSources(),existing=new Set(current.map(item=>item.url));
+  const restored=deletedSources.filter(item=>!existing.has(item.url));
+  saveCustomSources([...current,...restored]);deletedSources=[];renderSettingsSources();
+  settingsMessage.textContent=`${restored.length} SOURCE${restored.length===1?'':'S'} RESTORED`;
+}
 function renderSettingsSources() {
-  const items=loadCustomSources();settingsList.replaceChildren();
+  const items=loadCustomSources();settingsList.replaceChildren();syncSourceSelection();
   if(!items.length){const empty=document.createElement('div');empty.className='custom-source-empty';empty.textContent='NO CUSTOM SOURCES ADDED';settingsList.append(empty);return;}
   for(const item of items){
     const row=document.createElement('div');row.className=`custom-source-row${item.enabled?'':' is-off'}`;
+    const select=document.createElement('input');select.type='checkbox';select.className='custom-source-select';select.value=item.url;select.checked=selectedSources.has(item.url);select.setAttribute('aria-label',`Select ${customSourceDomain(item.url)}`);
+    row.classList.toggle('is-selected',select.checked);select.addEventListener('change',()=>{select.checked?selectedSources.add(item.url):selectedSources.delete(item.url);syncSourceSelection();});
     const copy=document.createElement('div');copy.className='custom-source-copy';
     const domain=document.createElement('a');domain.className='custom-source-domain';domain.textContent=customSourceDomain(item.url);domain.href=item.url;domain.target='_blank';domain.rel='noopener noreferrer';
     const status=document.createElement('div');status.className='custom-source-status';status.textContent=`${item.enabled?'ENABLED':'DISABLED'}${item.test?.status?` · ${item.test.status}`:''}`;copy.append(domain,status);renderSourceProfile(copy,item);
@@ -586,7 +567,7 @@ function renderSettingsSources() {
     });
     const edit=document.createElement('button');edit.type='button';edit.className='text-action';edit.textContent='EDIT';edit.addEventListener('click',()=>profileEditor(row,item));
     const remove=document.createElement('button');remove.type='button';remove.className='text-action';remove.textContent='REMOVE';remove.addEventListener('click',()=>{removeCustomSource(item.url);renderSettingsSources();});
-    actions.append(toggle,test,edit,remove);row.append(copy,actions);settingsList.append(row);
+    actions.append(toggle,test,edit,remove);row.append(select,copy,actions);settingsList.append(row);
   }
 }
 function openSettings() {openSettingsPage('menu');}
@@ -616,8 +597,6 @@ function setBusy(value) {
 }
 function destroyLocal() {
   generation++;
-  youtube.destroy();
-  twitch.destroy();
   hls?.destroy();
   hls = null;
   video.pause();
@@ -630,13 +609,9 @@ function destroyLocal() {
   lastTime = -1;
 }
 function latestLocalPosition() {
-  if(isYouTube())return youtube.target;
-  if(isTwitch())return null;
   return livePosition({live:localLive||video.duration===Infinity,seekable:video.seekable,syncPosition:hls?.liveSyncPosition,segmentDuration});
 }
 function knownLive() {
-  if(isYouTube())return youtube.live||candidate?.live===true;
-  if(isTwitch())return candidate?.live===true;
   return localLive||candidate?.live===true||(candidate?.live!==false&&currentEvent?.status==='live')||video.duration===Infinity||Boolean(casting()&&remotePlayer?.liveSeekableRange&&!remotePlayer.liveSeekableRange.isLiveDone);
 }
 async function waitForLocalLiveTarget(timeout=2500) {
@@ -654,21 +629,21 @@ function remoteLivePosition() {
 }
 function syncControls() {
   const onTV = casting();
-  const paused = onTV ? remotePlayer.isPaused : isYouTube()?youtube.paused:isTwitch()?twitch.paused:video.paused;
+  const paused = onTV ? remotePlayer.isPaused : video.paused;
   playButton.textContent = paused ? 'PLAY' : 'PAUSE';
   playButton.classList.toggle('is-active',!paused);playButton.setAttribute('aria-pressed',String(!paused));
-  const muted=onTV?remotePlayer.isMuted:isYouTube()?youtube.muted:isTwitch()?twitch.muted:video.muted;
+  const muted=onTV?remotePlayer.isMuted:video.muted;
   muteButton.classList.toggle('is-active',Boolean(muted));muteButton.setAttribute('aria-pressed',String(Boolean(muted)));
   $('#fullscreen-button').classList.toggle('is-active',Boolean(document.fullscreenElement));
   updatePlaybackMetadata(currentEvent,candidate,{active:playerView.classList.contains('is-active')&&Boolean(candidate),paused});
-  muteButton.textContent = (onTV ? remotePlayer.isMuted : isYouTube()?youtube.muted:isTwitch()?twitch.muted:video.muted) ? 'UNMUTE' : 'MUTE';
+  muteButton.textContent = (onTV ? remotePlayer.isMuted : video.muted) ? 'UNMUTE' : 'MUTE';
   const target = onTV ? remoteLivePosition() : latestLocalPosition();
-  const position = onTV ? remotePlayer.currentTime : isYouTube()?youtube.time:video.currentTime;
+  const position = onTV ? remotePlayer.currentTime : video.currentTime;
   const progressing = onTV
     ? remotePlayer.playerState === 'PLAYING'
-    : isYouTube()?!youtube.paused&&!youtube.buffering:isTwitch()?!twitch.paused:!buffering && !video.ended && Date.now() - lastProgress < 5000;
+    : !buffering && !video.ended && Date.now() - lastProgress < 5000;
   const live=knownLive();
-  const atLive = isTwitch()?live&&!paused:target !== null && !paused && progressing && !busy && !castLoading &&
+  const atLive = target !== null && !paused && progressing && !busy && !castLoading &&
     position >= target - Math.max(2, segmentDuration / 2);
   liveButton.disabled = busy || !live;
   liveButton.classList.toggle('has-live', live);
@@ -735,14 +710,6 @@ async function attachLocal(item, signal) {
   destroyLocal();
   const thisGeneration = generation;
   candidate = item;
-  if(item.provider==='youtube') {
-    placeholder('LOADING');await youtube.load(item,signal);
-    playerEmpty.classList.add('is-hidden');say();syncControls();return;
-  }
-  if(item.provider==='twitch') {
-    placeholder('LOADING');await twitch.load(item,signal);
-    localLive=true;playerEmpty.classList.add('is-hidden');say();syncControls();return;
-  }
   localLive=item.live===true;
   segmentDuration=item.segmentDuration||6;
   stage.classList.remove('is-casting');
@@ -823,7 +790,7 @@ async function runOperation(task) {
     if (operation === controller) { operation = null; setBusy(false); }
   }
 }
-async function openStream(push=true,restoreLive=null,restoreEvent=null) {
+async function openStream(push=true,restoreEvent=null) {
   search.stop(); currentEvent=restoreEvent;alternatives=[];failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;userPaused=false;
   let url;
   try {
@@ -834,14 +801,10 @@ async function openStream(push=true,restoreLive=null,restoreEvent=null) {
   } catch { homeMessage.textContent = 'ENTER A VALID URL'; streamInput.focus(); return; }
   homeMessage.textContent = '';
   sourceUrl = url.href;
-  showView('player');syncTvmPlayerNav();
-  if(push)navigate({view:'player',url:sourceUrl,tvm:currentEvent?.contentType==='tvm'?currentEvent:null});
+  showView('player');
+  if(push)navigate({view:'player',url:sourceUrl});
   const toTV = castConnected();
   await runOperation(async signal => {
-    if(restoreLive!==null) {
-      const items=await apiResolve(signal);if(items[0]?.provider==='youtube' && items[0].live===null)items[0].live=restoreLive;
-      return playItem(items[0],signal,toTV);
-    }
     return resolveAndPlay(signal,toTV);
   });
 }
@@ -865,7 +828,7 @@ function updateTVButton() {
   const airplay = typeof video.webkitShowPlaybackTargetPicker === 'function';
   const castReady = Boolean(castContext);
   const chromium=/Chrome|Chromium|Edg\//.test(navigator.userAgent);
-  tvMode = isEmbedded()?null:chromium?(castReady?'cast':null):airplay?'airplay':castReady?'cast':null;
+  tvMode = chromium?(castReady?'cast':null):airplay?'airplay':castReady?'cast':null;
   tvButton.hidden = !tvMode;
   tvButton.textContent = tvMode === 'airplay' ? 'AIRPLAY' : 'CAST';
   tvButton.classList.toggle('is-connected', castConnected() || Boolean(video.webkitCurrentPlaybackTargetIsWireless));
@@ -886,7 +849,6 @@ async function loadOnTV(item, signal) {
   castLoading = true;
   updateTVButton();
   try {
-    if(['youtube','twitch'].includes(item.provider)) throw new Error('CAST_UNAVAILABLE');
     const live=Boolean(item.live);
     segmentDuration=item.segmentDuration || segmentDuration;
     if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -983,6 +945,10 @@ $('#link-form').addEventListener('submit', event => {event.preventDefault();open
 $('#settings-button').addEventListener('click', openSettings);
 testAllSourcesButton?.addEventListener('click',testAllCustomSources);
 cleanupSourcesButton?.addEventListener('click',cleanupAllCustomSources);
+selectAllSourcesButton.addEventListener('click',()=>{selectedSources=new Set(loadCustomSources().map(item=>item.url));syncSourceSelection();});
+clearSourceSelectionButton.addEventListener('click',()=>{selectedSources.clear();syncSourceSelection();});
+deleteSelectedSourcesButton.addEventListener('click',deleteSelectedSources);
+undoSourceDeletionButton.addEventListener('click',undoSourceDeletion);
 exportSourcesButton?.addEventListener('click',downloadSourceExport);
 shareSourcesButton?.addEventListener('click',shareCustomSources);
 importSourcesButton?.addEventListener('click',()=>importSourcesFile?.click());
@@ -1012,9 +978,6 @@ $('#settings-back').addEventListener('click',()=>{
   else {navigate({view:'home'},true);restoreRoute();}
 });
 refreshButton.addEventListener('click', refreshStream);
-previousEpisodeButton?.addEventListener('click',()=>playTvmAdjacent('previous'));
-nextEpisodeButton?.addEventListener('click',()=>playTvmAdjacent('next'));
-autoplayButton?.addEventListener('click',()=>{autoplayEnabled=!autoplayEnabled;localStorage.setItem('cleanstream.tvm.autoplay',autoplayEnabled?'1':'0');updateAutoplayButton();});
 $('#back-button').addEventListener('click', () => {
   if(history.state?.cleanStream && history.state.depth>0)history.back();
   else {const q=new URL(location.href).searchParams.get('q');navigate(q?{view:'search',q}:{view:'home'},true);restoreRoute();}
@@ -1022,8 +985,6 @@ $('#back-button').addEventListener('click', () => {
 playButton.addEventListener('click', async () => {
   if (casting()) { userPaused=!remotePlayer.isPaused;remoteController.playOrPause(); return; }
   if (!candidate || busy) return;
-  if(isYouTube()){userPaused=!youtube.paused;youtube.paused?youtube.play():youtube.pause();syncControls();return;}
-  if(isTwitch()){userPaused=!twitch.paused;twitch.paused?twitch.play():twitch.pause();syncControls();return;}
   if (!video.paused) {userPaused=true;video.pause();}
   else {
     try { userPaused=false;await video.play(); say(); }
@@ -1032,14 +993,10 @@ playButton.addEventListener('click', async () => {
 });
 muteButton.addEventListener('click', () => {
   if (casting()) remoteController.muteOrUnmute();
-  else if(isYouTube())youtube.mute();
-  else if(isTwitch())twitch.mute();
   else video.muted = !video.muted;
   syncControls();
 });
 liveButton.addEventListener('click', async () => {
-  if(isYouTube()){userPaused=false;youtube.jump();syncControls();return;}
-  if(isTwitch()){userPaused=false;twitch.jump();syncControls();return;}
   if (casting()) {
     const target = remoteLivePosition();
     if (target === null) {say('LIVE POSITION IS STILL LOADING');return;}
@@ -1060,7 +1017,7 @@ $('#fullscreen-button').addEventListener('click', async () => {
   if (casting()) { say('VIDEO IS PLAYING ON YOUR TV'); return; }
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
-    else if (!isEmbedded() && video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+    else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
     else await stage.requestFullscreen?.();
   } catch { say('FULLSCREEN IS UNAVAILABLE'); }
 });
@@ -1069,10 +1026,10 @@ for (const name of ['play', 'pause', 'volumechange', 'durationchange', 'progress
 }
 video.addEventListener('playing', () => { userPaused=false;buffering = false; lastProgress = Date.now(); syncControls(); });
 video.addEventListener('waiting', () => { buffering = true; syncControls(); });
-video.addEventListener('ended', () => { buffering = true; syncControls(); if(autoplayEnabled&&isTvmEpisode()&&!autoplayAdvancing)setTimeout(()=>playTvmAdjacent('next',{replace:true}),0); });
+video.addEventListener('ended', () => { buffering = true; syncControls(); });
 video.addEventListener('error', () => {
   buffering = true;
-  if (!busy && candidate && !casting() && !isEmbedded()) recoverStream();
+  if (!busy && candidate && !casting()) recoverStream();
   syncControls();
 });
 video.addEventListener('timeupdate', () => {
@@ -1083,17 +1040,16 @@ video.addEventListener('pause', () => {if(!busy && !recovering && !castLoading &
 setInterval(() => {
   if (!playerView.classList.contains('is-active')) return;
   syncControls();
-  if(!isEmbedded() && !userPaused && !busy && !recovering && !casting() && !document.hidden && !video.webkitCurrentPlaybackTargetIsWireless && lastProgress && Date.now()-lastProgress>18000)recoverStream();
+  if(!userPaused && !busy && !recovering && !casting() && !document.hidden && !video.webkitCurrentPlaybackTargetIsWireless && lastProgress && Date.now()-lastProgress>18000)recoverStream();
   if(!busy && !recovering && lastProgress && Date.now()-lastRecovery>60000 && !buffering){recoveryAttempts=0;recoveryCycles=0;}
   if(castOwned && castSession() && !busy && !castLoading && !recovering){
     if(remotePlayer?.isMediaLoaded && remotePlayer.isPaused)userPaused=true;
     if(remotePlayer?.playerState==='PLAYING'){userPaused=false;if(remotePosition!==remotePlayer.currentTime){remotePosition=remotePlayer.currentTime;remoteProgress=Date.now();}}
-    if(autoplayEnabled&&isTvmEpisode()&&remotePlayer?.playerState==='IDLE'&&String(remotePlayer?.idleReason||'').toUpperCase()==='FINISHED'&&!autoplayAdvancing)playTvmAdjacent('next',{replace:true});
     if(!userPaused && remoteProgress && Date.now()-remoteProgress>18000)recoverStream();
   }
   // Native Safari doesn't expose HLS playlist state. Read the same small playlist
   // periodically to distinguish live from VOD/ended streams without re-extracting.
-  if (candidate?.isHls && !hls && !document.hidden && !isEmbedded() && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
+  if (candidate?.isHls && !hls && !document.hidden && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
     nativeProbeAt = Date.now(); nativeProbePending = true;
     const thisGeneration = generation;
     const controller = new AbortController();
@@ -1107,9 +1063,9 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden){lastProgr
 document.addEventListener('fullscreenchange',syncControls);
 if(navigator.mediaSession){
   for(const [action,handler] of Object.entries({
-    play:()=>{if(casting()){if(remotePlayer.isPaused)remoteController.playOrPause();}else if(isYouTube())youtube.play();else if(isTwitch())twitch.play();else video.play().catch(()=>{});userPaused=false;},
-    pause:()=>{if(casting()){if(!remotePlayer.isPaused)remoteController.playOrPause();}else if(isYouTube())youtube.pause();else if(isTwitch())twitch.pause();else video.pause();userPaused=true;},
-    seekto:details=>{if(knownLive())liveButton.click();else if(casting()){remotePlayer.currentTime=details.seekTime;remoteController.seek();}else if(!isEmbedded())video.currentTime=details.seekTime;}
+    play:()=>{if(casting()){if(remotePlayer.isPaused)remoteController.playOrPause();}else video.play().catch(()=>{});userPaused=false;},
+    pause:()=>{if(casting()){if(!remotePlayer.isPaused)remoteController.playOrPause();}else video.pause();userPaused=true;},
+    seekto:details=>{if(knownLive())liveButton.click();else if(casting()){remotePlayer.currentTime=details.seekTime;remoteController.seek();}else video.currentTime=details.seekTime;}
   }))try{navigator.mediaSession.setActionHandler(action,handler);}catch{}
 }
 updateTVButton();
@@ -1119,9 +1075,9 @@ if(window.__castReady || window.cast?.framework) window.__onGCastApiAvailable(tr
 
 function leavePlayer() {
   closeSourceMenu();
-  operation?.abort();operation=null;userPaused=true;recovering=false;autoplayAdvancing=false;
+  operation?.abort();operation=null;userPaused=true;recovering=false;
   castLoadVersion++;desiredCastItem=null;castLoading=false;
-  destroyLocal();candidate=null;currentEvent=null;alternatives=[];sourceUrl='';hideTvmPlayerNav();setBusy(false);say();
+  destroyLocal();candidate=null;currentEvent=null;alternatives=[];sourceUrl='';setBusy(false);say();
 }
 function navigate(state,replace=false) {
   if(new URL(location.href).searchParams.has('watch') && state.view!=='player')stopCastForRouteExit();
@@ -1130,12 +1086,10 @@ function navigate(state,replace=false) {
   if(state.view==='settings')url.searchParams.set('settings',state.section||'menu');
   if(state.view==='explore')url.searchParams.set('explore','1');
   if(state.view==='event'&&state.event)url.searchParams.set('event',state.event);
-  if(state.view==='tvm'&&state.kind&&state.id){url.searchParams.set('tvm',state.kind);url.searchParams.set('id',state.id);}
   if(state.view==='player') {
     url.searchParams.set('watch',state.url);
     if(state.event)url.searchParams.set('event',state.event);
     if(state.live!==undefined && state.live!==null)url.searchParams.set('live',state.live?'1':'0');
-    if(state.tvm){url.searchParams.set('tvm',state.tvm.kind);url.searchParams.set('id',state.tvm.tmdbId);if(state.tvm.seasonNumber)url.searchParams.set('season',state.tvm.seasonNumber);if(state.tvm.episodeNumber)url.searchParams.set('episode',state.tvm.episodeNumber);}
   }
   const same=url.href===location.href;
   const depth=(history.state?.cleanStream?history.state.depth:0)+(replace||same?0:1);
@@ -1147,21 +1101,18 @@ async function restoreRoute() {
   const params=new URL(location.href).searchParams;
   if(playerView.classList.contains('is-active')&&!params.has('watch'))stopCastForRouteExit();
   search.stop();leavePlayer();
-  const q=params.get('q'),url=params.get('watch'),tvmKind=params.get('tvm'),tmdbId=params.get('id');
+  const q=params.get('q'),url=params.get('watch');
   if(params.has('settings')){
     const section=params.get('settings');showView('settings');showSettingsPage(section==='1'?'menu':section||'menu');return;
   }
   if(url) {
     streamInput.value=url;let restoreEvent=null;
-    if(tvmKind==='tv'&&tmdbId&&params.get('season')&&params.get('episode')){
-      try{const response=await fetch(`/api/tvm/tv/${encodeURIComponent(tmdbId)}/episode/${encodeURIComponent(params.get('season'))}/${encodeURIComponent(params.get('episode'))}`,{cache:'no-store'});if(response.ok){const data=await response.json();restoreEvent=data.current;tvmEpisodeContext=data;}}catch{}
-    }else if(tvmKind==='movie'&&tmdbId){try{const response=await fetch(`/api/tvm/movie/${encodeURIComponent(tmdbId)}`,{cache:'no-store'});if(response.ok)restoreEvent=await response.json();}catch{}}
     if(!restoreEvent&&params.get('event')){
       try{const response=await fetch(`/api/event/${encodeURIComponent(params.get('event'))}`);if(response.ok)restoreEvent=(await response.json()).event;}catch{}
       if(!restoreEvent&&q){try{const response=await fetch(`/api/events?q=${encodeURIComponent(q)}`);if(response.ok)restoreEvent=(await response.json()).events?.find(item=>item.id===params.get('event'))||null;}catch{}}
     }
     if(token!==routeGeneration)return;
-    await openStream(false,params.has('live')?params.get('live')==='1':null,restoreEvent);
+    await openStream(false,restoreEvent);
     if(token!==routeGeneration)return;
     if(!restoreEvent&&q && params.get('event')) {
       try {
@@ -1170,9 +1121,7 @@ async function restoreRoute() {
         if(token===routeGeneration)currentEvent=data.events?.find(e=>e.id===params.get('event'))||null;
       }catch{}
     }
-    syncTvmPlayerNav(tvmEpisodeContext);syncControls();
-  } else if(tvmKind==='tv'&&tmdbId) {
-    showView('home');await search.showTv(tmdbId);
+    syncControls();
   } else if(params.get('explore')==='1') {
     showView('home');
     const data=await loadLiveWindow(false);if(token!==routeGeneration)return;

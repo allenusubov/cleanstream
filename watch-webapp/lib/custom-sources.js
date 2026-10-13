@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import {excludedPlatform} from '../public/live-only.js';
+import {KNOWN_CATEGORIES} from '../public/custom-sources.js';
 import {publicURL,AppError} from './network.js';
 
 async function safeList(values=[]){
@@ -6,6 +8,7 @@ async function safeList(values=[]){
   for(const value of (Array.isArray(values)?values:[]).slice(0,12)){
     try{
       const url=publicURL(String(value||''));
+      if(excludedPlatform(url.href))continue;
       if(seen.has(url.href))continue;seen.add(url.href);out.push(url.href);
     }catch{}
   }
@@ -20,20 +23,21 @@ export async function customRegistry(values=[]){
     if(value?.enabled===false)continue;
     const raw=String(typeof value==='object'?value?.url:value||'').trim();if(!raw||raw.length>2048)continue;
     let url;try{url=publicURL(raw.includes('://')?raw:`https://${raw}`);}catch{continue;}
-    const normalized=url.href;
+    const normalized=url.href;if(excludedPlatform(normalized))continue;
     if(seen.has(normalized))continue;seen.add(normalized);
     const host=url.hostname.toLowerCase().replace(/^www\./,'');
     const id=crypto.createHash('sha256').update(normalized).digest('hex').slice(0,12);
     const categories={};
     if(value&&typeof value==='object'&&value.categories&&typeof value.categories==='object'){
       for(const [key,urls] of Object.entries(value.categories).slice(0,25)){
-        const clean=await safeList(urls);if(clean.length)categories[String(key).toUpperCase()]=clean;
+        const category=String(key).toUpperCase();if(!KNOWN_CATEGORIES.includes(category)&&category!=='*')continue;
+        const clean=await safeList(urls);if(clean.length)categories[category]=clean;
       }
     }
     const eventListUrls=await safeList(value&&typeof value==='object'?value.eventLists:[]);
     const support={};
     if(value&&typeof value==='object'&&value.support&&typeof value.support==='object'){
-      for(const [key,state] of Object.entries(value.support).slice(0,25)){const clean=String(state||'').toUpperCase();if(['YES','NO','UNKNOWN'].includes(clean))support[String(key).toUpperCase()]=clean;}
+      for(const [key,state] of Object.entries(value.support).slice(0,25)){const clean=String(state||'').toUpperCase();if(KNOWN_CATEGORIES.includes(String(key).toUpperCase())&&['YES','NO','UNKNOWN'].includes(clean))support[String(key).toUpperCase()]=clean;}
     }
     const performance=value&&typeof value==='object'&&value.performance&&typeof value.performance==='object'?{
       successes:Number(value.performance.successes)||0,failures:Number(value.performance.failures)||0,avgWatchMs:Number(value.performance.avgWatchMs)||0,lastSuccessAt:Number(value.performance.lastSuccessAt)||0

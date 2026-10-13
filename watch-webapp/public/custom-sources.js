@@ -1,5 +1,6 @@
+import {excludedPlatform} from './live-only.js';
 export const CUSTOM_SOURCE_KEY='cleanstream.customSources.v1';
-export const KNOWN_CATEGORIES=['TV','MOVIES','NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET'];
+export const KNOWN_CATEGORIES=['NBA','WNBA','NFL','CFB','NCAAB','WNCAAB','UFC','MMA','BOXING','NHL','MLB','SOCCER','F1','NASCAR','INDYCAR','GOLF','TENNIS','RUGBY','CRICKET'];
 const CATEGORY_SET=new Set(KNOWN_CATEGORIES);
 const SUPPORT_VALUES=new Set(['YES','NO','UNKNOWN']);
 
@@ -56,6 +57,7 @@ export function normalizeCustomSourceUrl(value) {
   if(!raw)throw new Error('ENTER A SOURCE URL');
   let url;
   try{url=new URL(raw.includes('://')?raw:`https://${raw}`);}catch{throw new Error('ENTER A VALID SOURCE URL');}
+  if(excludedPlatform(url.href))throw new Error('USE A LIVE EVENT AGGREGATOR URL');
   if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error('ENTER A VALID SOURCE URL');
   if(!url.pathname)url.pathname='/';return url.href;
 }
@@ -73,7 +75,7 @@ function cleanSupport(raw={},categories={}){
 function cleanStructure(raw={}){
   const list=(value,max=12)=>[...new Set((Array.isArray(value)?value:[]).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,max);
   const routeStyle=['PATH','HASH','QUERY','MIXED','UNKNOWN'].includes(String(raw.routeStyle||'').toUpperCase())?String(raw.routeStyle).toUpperCase():'UNKNOWN';
-  return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12),searchTemplates:list(raw.searchTemplates,8),episodeTemplates:list(raw.episodeTemplates,8),titleTemplates:list(raw.titleTemplates,8),browserSearch:Boolean(raw.browserSearch)};
+  return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12),searchTemplates:list(raw.searchTemplates,8),browserSearch:Boolean(raw.browserSearch)};
 }
 function cleanTest(raw={}){
   const status=['LEARNED','PARTIAL','UNREACHABLE','FAILED'].includes(String(raw.status||'').toUpperCase())?String(raw.status).toUpperCase():'';
@@ -164,8 +166,6 @@ export function mergeCustomSourceProfile(url,profile,storage=globalThis.localSto
       mirrorLabels:[...new Set([...(item.structure?.mirrorLabels||[]),...(learned.structure?.mirrorLabels||[])])].slice(0,12),
       playerHosts:[...new Set([...(item.structure?.playerHosts||[]),...(learned.structure?.playerHosts||[])])].slice(0,12),
       searchTemplates:[...new Set([...(item.structure?.searchTemplates||[]),...(learned.structure?.searchTemplates||[])])].slice(0,8),
-      episodeTemplates:[...new Set([...(item.structure?.episodeTemplates||[]),...(learned.structure?.episodeTemplates||[])])].slice(0,8),
-      titleTemplates:[...new Set([...(item.structure?.titleTemplates||[]),...(learned.structure?.titleTemplates||[])])].slice(0,8),
       browserSearch:Boolean(item.structure?.browserSearch||learned.structure?.browserSearch)
     };
     const test=learned.test?.status?learned.test:item.test||cleanTest({});
@@ -185,8 +185,6 @@ export function recordCustomSourceSuccess(url,startupMs=0,details={},storage=glo
     const mirror=String(details.mirrorLabel||'').trim();if(mirror&&mirror!=='DEFAULT')add('mirrorLabels',mirror);
     const learned=cleanStructure(details.structure||{});
     for(const value of learned.searchTemplates)add('searchTemplates',value,8);
-    for(const value of learned.episodeTemplates)add('episodeTemplates',value,8);
-    for(const value of learned.titleTemplates)add('titleTemplates',value,8);
     if(learned.browserSearch)structure.browserSearch=true;
     return {...item,performance:{...old,successes,avgWatchMs,lastSuccessAt:Date.now()},structure};
   }),storage);
@@ -217,15 +215,18 @@ export function cleanupCustomSourceProfiles(targetUrl='',storage=globalThis.loca
       eventSeen.add(cleaned);eventLists.push(cleaned);
     }
     const structure=cleanStructure(item.structure);
-    // Search/title/episode templates are intentionally preserved: unlike a random
-    // learned content page, they contain reusable placeholders and are valuable.
+    // Reusable search templates are preserved.
     const next={...item,categories,eventLists,support,structure};
     if(changed)sourcesChanged++;return next;
   });
   return {items:saveCustomSources(items,storage),removed,normalized,sourcesChanged};
 }
 
-export function removeCustomSource(url,storage=globalThis.localStorage) {return saveCustomSources(loadCustomSources(storage).filter(item=>item.url!==url),storage);}
+export function removeCustomSources(urls,storage=globalThis.localStorage){
+  const selected=new Set(urls);
+  return saveCustomSources(loadCustomSources(storage).filter(item=>!selected.has(item.url)),storage);
+}
+export function removeCustomSource(url,storage=globalThis.localStorage){return removeCustomSources([url],storage);}
 export function enabledCustomSources(storage=globalThis.localStorage) {return loadCustomSources(storage).filter(item=>item.enabled);}
 export function enabledCustomSourceUrls(storage=globalThis.localStorage) {return enabledCustomSources(storage).map(item=>item.url);}
 export function splitCustomSourceInput(value) {return String(value||'').split(/\r?\n/).map(item=>item.trim()).filter(Boolean);}
@@ -251,13 +252,11 @@ export function profileLines(item){
   for(const [key,state] of Object.entries(item.support||{}))if(state==='NO'&&!(item.categories?.[key]||[]).length)lines.push(`${key} NO`);
   for(const url of item.eventLists||[])lines.push(`EVENTS ${compact(url)}`);
   for(const url of item.structure?.searchTemplates||[])lines.push(`SEARCH ${compact(url)}`);
-  for(const url of item.structure?.episodeTemplates||[])lines.push(`EPISODE ${compact(url)}`);
-  for(const url of item.structure?.titleTemplates||[])lines.push(`TITLE ${compact(url)}`);
   if(item.structure?.browserSearch)lines.push('SEARCHUI YES');
   return lines.join('\n');
 }
 export function parseProfileLines(value,baseUrl=''){
-  const categories={},eventLists=[],support={},structure={searchTemplates:[],episodeTemplates:[],titleTemplates:[],browserSearch:false};let invalid=0;
+  const categories={},eventLists=[],support={},structure={searchTemplates:[],browserSearch:false};let invalid=0;
   for(const raw of String(value||'').split(/\r?\n/)){
     const line=raw.trim();if(!line)continue;
     const supportMatch=line.match(/^(\S+)\s+(YES|NO|UNKNOWN)$/i);
@@ -273,8 +272,6 @@ export function parseProfileLines(value,baseUrl=''){
       if(!eventLists.includes(url))eventLists.push(url);continue;
     }
     if(label==='SEARCH'){if(!structure.searchTemplates.includes(url))structure.searchTemplates.push(url);continue;}
-    if(label==='EPISODE'){if(!structure.episodeTemplates.includes(url))structure.episodeTemplates.push(url);continue;}
-    if(label==='TITLE'){if(!structure.titleTemplates.includes(url))structure.titleTemplates.push(url);continue;}
     if(!CATEGORY_SET.has(label)){invalid++;continue;}
     categories[label]??=[];
     if(!categories[label].includes(url))categories[label].push(url);

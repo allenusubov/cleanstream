@@ -3,10 +3,7 @@ import {fetchLimited,safeURL} from './network.js';
 import {withPage,visit} from './resolver.js';
 
 export const CATEGORY_ALIASES={
-  // Treat common navigation labels as the same family. TEST should learn a site's
-  // structure, not require one exact word such as "TV".
-  TV:['tv','television','tv shows','television shows','shows','tv series','television series','series','episodes','tv episodes','watch tv','watch shows','watch series'],
-  MOVIES:['movies','movie','films','film','cinema','feature films','watch movies','watch films'],
+  // Learn reusable live-event navigation labels.
   NBA:['nba','basketball'], WNBA:['wnba','women basketball','womens basketball'], NFL:['nfl','american football'],
   CFB:['cfb','college football','ncaa football'], NCAAB:['ncaab','ncaa basketball','college basketball'], WNCAAB:['wncaab','womens college basketball'],
   UFC:['ufc','ultimate fighting championship'], MMA:['mma','mixed martial arts'], BOXING:['boxing','boxing streams','boxing events'], NHL:['nhl','hockey'], MLB:['mlb','baseball'], SOCCER:['soccer','football'],
@@ -15,7 +12,7 @@ export const CATEGORY_ALIASES={
 };
 
 const EVENT_WORDS=['events','live','schedule','upcoming','matches','games','fixtures','calendar'];
-const HUB_WORDS=['sports','sport','watch','live','events','schedule','tv','television','shows','series','movies','films','cinema'];
+const HUB_WORDS=['sports','sport','watch','live','events','schedule'];
 const HUB_PHRASES=[...new Set([...HUB_WORDS,...Object.values(CATEGORY_ALIASES).flat()].map(value=>String(value).toLowerCase()))];
 const PAGINATION_PARAMS=new Set(['page','p','pg','offset','start','from']);
 const TRACKING_PARAMS=new Set(['utm_source','utm_medium','utm_campaign','utm_term','utm_content','fbclid','gclid']);

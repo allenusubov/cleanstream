@@ -1,59 +1,74 @@
 import crypto from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {safeURL, fetchLimited, AppError, WorkPool} from './network.js';
-import {currentSignal,aborted,abortable} from './discovery-control.js';
+import {currentSignal,aborted} from './discovery-control.js';
+import {ReusableBrowser} from './browser-lifecycle.js';
+import {excludedPlatform} from '../public/live-only.js';
 const pool=new WorkPool(Math.max(1,Math.min(6,Number(process.env.BROWSER_CONCURRENCY)||4)));
-let browserPromise=null,chromiumPromise=null;
+let chromiumPromise=null;
 async function chromiumApi(){
-  chromiumPromise ||= import('playwright').then(mod=>mod.chromium);
+  chromiumPromise ||= import('playwright').then(mod=>mod.chromium).catch(error=>{chromiumPromise=null;throw error;});
   return chromiumPromise;
 }
 const cache=new Map(), inflight=new Map();
 const HLS=/\.m3u8(?:$|\?)/i;
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
+const extractionBrowser=new ReusableBrowser(async()=>{
+  const chromium=await chromiumApi();
+  return chromium.launch({headless:true,timeout:10000,executablePath:process.env.CHROMIUM_EXECUTABLE_PATH||undefined,
+    args:['--no-sandbox','--disable-dev-shm-usage','--disable-gpu']});
+});
 export async function withPage(task) {
   return pool.run(async()=>{
-    let context,cancel;const signal=currentSignal();
-    try {
-      aborted(signal);
-      // Keep one Chromium process warm for the lifetime of a Cloud Run instance.
-      // Contexts are still isolated and closed after every job.
-      const chromium=await chromiumApi();
-      browserPromise ||= chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE_PATH || undefined,args:['--no-sandbox','--disable-dev-shm-usage','--disable-gpu']});
-      const browser=await abortable(browserPromise,signal);
-      context=await browser.newContext({serviceWorkers:'block',acceptDownloads:false,
-        userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'});
-      cancel=()=>context?.close().catch(()=>{});
-      signal?.addEventListener('abort',cancel,{once:true});aborted(signal);
-      context.setDefaultTimeout(1200);
-      let page=null, requests=0;
-      context.on('page',p=>{if(page && p!==page) p.close().catch(()=>{});});
-      await context.route('**/*',async route=>{
-        if(++requests>180 || ['image','font','media'].includes(route.request().resourceType())) return route.abort();
-        try { await safeURL(route.request().url()); await route.continue(); }
-        catch { await route.abort().catch(()=>{}); }
-      });
-      page=await context.newPage();
-      const timer=setTimeout(()=>context.close().catch(()=>{}),16000);
-      try { return await task(page); } finally {clearTimeout(timer);}
-    } finally {
-      signal?.removeEventListener('abort',cancel);
-      await context?.close().catch(()=>{});
+    const signal=currentSignal();
+    for(let attempt=0;attempt<2;attempt++){
+      let context,cancel,timer,expired=false;
+      try {
+        aborted(signal);
+        context=await extractionBrowser.context({serviceWorkers:'block',acceptDownloads:false,
+          userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'},signal);
+        cancel=()=>context?.close().catch(()=>{});
+        signal?.addEventListener('abort',cancel,{once:true});aborted(signal);
+        context.setDefaultTimeout(1200);
+        let page=null,requests=0;
+        context.on('page',p=>{if(page&&p!==page)p.close().catch(()=>{});});
+        await context.route('**/*',async route=>{
+          if(++requests>180||['image','font','media'].includes(route.request().resourceType()))return route.abort();
+          try{await safeURL(route.request().url());await route.continue();}
+          catch{await route.abort().catch(()=>{});}
+        });
+        page=await context.newPage();
+        timer=setTimeout(()=>{expired=true;context.close().catch(()=>{});},16000);
+        return await task(page);
+      }catch(cause){
+        aborted(signal);
+        if(expired){const error=new AppError('SOURCE_TIMEOUT',504);error.cause=cause;throw error;}
+        if(context&&!context.browser()?.isConnected()){
+          if(attempt===0)continue;
+          const error=new AppError('BROWSER_UNAVAILABLE',503);error.cause=cause;throw error;
+        }
+        throw cause;
+      }finally{
+        clearTimeout(timer);signal?.removeEventListener('abort',cancel);
+        await context?.close().catch(()=>{});
+      }
     }
   });
 }
 export async function visit(page,url) {
   await safeURL(url);
-  try {await page.goto(url,{waitUntil:'domcontentloaded',timeout:6000});}
+  let response=null;
+  try {response=await page.goto(url,{waitUntil:'domcontentloaded',timeout:6000});}
   catch(error){if(page.url()==='about:blank') throw error;}
   // Give client-side routers one short turn, but do not impose a multi-second sleep.
   await page.waitForTimeout(250);
+  return response;
 }
 function htmlMedia(body,base){
   const text=String(body||'').replace(/\u0026/g,'&').replace(/&amp;/g,'&');
   const found=new Map();
   const add=value=>{
-    if(!value)return;
+    if(!value||excludedPlatform(value))return;
     try{const url=new URL(value.replace(/\\\//g,'/'),base).href;if(MEDIA.test(url))found.set(url,{url,isHls:HLS.test(url),contentType:''});}catch{}
   };
   for(const match of text.matchAll(/(?:src|href)=["']([^"']+)["']/ig))add(match[1]);
@@ -77,7 +92,7 @@ async function extract(url) {
   return withPage(async page=>{
     const found=new Map();
     const add=(url,type='',status=200)=>{
-      if(!/^https?:/.test(url) || /doubleclick|\/ads?\/|preroll|analytics/i.test(url)) return;
+      if(!/^https?:/.test(url)||excludedPlatform(url)||/doubleclick|\/ads?\/|preroll|analytics/i.test(url))return;
       if(MEDIA.test(url) || /mpegurl|^video\/(mp4|webm)/i.test(type)) {
         const old=found.get(url);
         found.set(url,{url,isHls:HLS.test(url)||/mpegurl/i.test(type),contentType:type||old?.contentType||'',status});
@@ -85,18 +100,27 @@ async function extract(url) {
     };
     page.on('request',r=>add(r.url()));
     page.on('response',async r=>{try{add(r.url(),(await r.allHeaders())['content-type'],r.status());}catch{}});
-    await visit(page,url);
-    for(const frame of page.frames()) {
-      try {
-        for(const entry of await frame.locator('video,video source').evaluateAll(nodes=>nodes.map(n=>({url:n.currentSrc||n.src,type:n.type})))) add(entry.url,entry.type);
-        if(!found.size) {
-          await frame.locator('video').evaluateAll(nodes=>nodes.forEach(v=>{v.muted=true; v.play().catch(()=>{});}));
-          const button=frame.locator('button[aria-label*="play" i],.vjs-big-play-button,.jw-icon-playback,.plyr__control[data-plyr="play"]').first();
-          if(await button.isVisible()) await button.click({timeout:800});
-        }
-      } catch {}
-    }
-    if(!found.size) await page.waitForTimeout(1200);
+    const documentResponse=await visit(page,url);
+    if([401,403].includes(documentResponse?.status()))throw new AppError('SOURCE_ACCESS_BLOCKED',422);
+    const playedFrames=new WeakSet(),deadline=Date.now()+4500;
+    const hasMedia=()=>[...found.values()].some(item=>item.status<400);
+    do {
+      for(const frame of page.frames()) {
+        try {
+          for(const entry of await frame.locator('video,video source').evaluateAll(nodes=>nodes.map(n=>({url:n.currentSrc||n.src,type:n.type}))))add(entry.url,entry.type);
+          if(!hasMedia()) {
+            if(!playedFrames.has(frame))await frame.locator('video').evaluateAll(nodes=>nodes.forEach(v=>{v.muted=true;v.play().catch(()=>{});}));
+            const button=frame.locator('button[aria-label*="play" i],.vjs-big-play-button,.jw-icon-playback,.plyr__control[data-plyr="play"]').first();
+            if(!playedFrames.has(frame)&&await button.isVisible()){
+              await button.click({timeout:800});playedFrames.add(frame);
+            }
+          }
+        }catch{}
+        if(hasMedia())break;
+      }
+      if(hasMedia())break;
+      if(Date.now()<deadline)await page.waitForTimeout(250);
+    }while(Date.now()<deadline);
     return [...found.values()].filter(x=>x.status<400).sort((a,b)=>Number(b.isHls)-Number(a.isHls)).slice(0,8);
   });
 }
@@ -201,7 +225,7 @@ export async function quickValidate(item,{depth=0}={}) {
 
 export function provisionalCandidate(item,sourceUrl=''){
   const mediaUrl=item?.url||item?.mediaUrl;
-  if(!mediaUrl)return null;
+  if(!mediaUrl||excludedPlatform(mediaUrl))return null;
   try{if(new URL(mediaUrl).protocol!=='https:')return null;}catch{return null;}
   return {
     ...item,mediaUrl,isHls:Boolean(item.isHls||HLS.test(mediaUrl)),castEligible:false,provisional:true,
@@ -211,6 +235,7 @@ export function provisionalCandidate(item,sourceUrl=''){
 }
 export function clearResolved(url,origin) {for(const key of cache.keys()) if(key.startsWith(`${origin}|${url}|`)) cache.delete(key);}
 export async function resolve(url,origin,{progress=false}={}) {
+  if(excludedPlatform(url))throw new AppError('LIVE_AGGREGATORS_ONLY',422);
   url=(await safeURL(url)).href;
   const key=`${origin}|${url}|${progress}`;
   const old=cache.get(key);

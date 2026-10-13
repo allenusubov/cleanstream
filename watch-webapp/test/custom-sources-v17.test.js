@@ -38,16 +38,16 @@ test('custom source cleanup removes learned title pages and collapses pagination
   s.setItem('cleanstream.customSources.v1',JSON.stringify([{
     url:'https://example.com/',enabled:true,
     categories:{
-      TV:['https://example.com/shows?page=1','https://example.com/shows?page=2','https://example.com/show/207347-blue-box','https://example.com/watch/show/22980-title/1/1'],
-      MOVIES:['https://example.com/movies','https://example.com/movie/9012-jackass-the-movie'],
+      NBA:['https://example.com/nba?page=1','https://example.com/nba?page=2','https://example.com/show/207347-blue-box','https://example.com/watch/show/22980-title/1/1'],
+      NFL:['https://example.com/nfl','https://example.com/movie/9012-jackass-the-movie'],
       BOXING:['https://example.com/show/207347-blue-box']
     },
-    support:{TV:'YES',MOVIES:'YES',BOXING:'YES'},
+    support:{NBA:'YES',NFL:'YES',BOXING:'YES'},
     eventLists:['https://example.com/events','https://example.com/event/nfl-network-m']
   }]));
   const result=cleanupCustomSourceProfiles('',s),item=result.items[0];
-  assert.deepEqual(item.categories.TV,['https://example.com/shows']);
-  assert.deepEqual(item.categories.MOVIES,['https://example.com/movies']);
+  assert.deepEqual(item.categories.NBA,['https://example.com/nba']);
+  assert.deepEqual(item.categories.NFL,['https://example.com/nfl']);
   assert.equal(item.categories.BOXING,undefined);
   assert.equal(item.support.BOXING,'UNKNOWN');
   assert.deepEqual(item.eventLists,['https://example.com/events']);

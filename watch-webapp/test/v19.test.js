@@ -58,7 +58,7 @@ test('only live and soon events auto-check; partial checks never claim exhaustiv
 test('event titles and transparent league artwork replace generic playback branding',()=>{
   const meta=eventMetadata({title:'KNICKS VS CELTICS',league:'NBA'},{},'https://app.example');
   assert.equal(meta.title,'KNICKS VS CELTICS');assert.equal(meta.artwork[0].src,'https://app.example/artwork/nba.png');
-  assert.equal(eventMetadata({showTitle:'SHOW',title:'EPISODE 2'}).title,'SHOW · EPISODE 2');
+  assert.equal(eventMetadata({title:'UFC MAIN EVENT',league:'UFC'}).title,'UFC MAIN EVENT');
 });
 
 test('Cast load has a timeout and responds to cancellation',async()=>{
