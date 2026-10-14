@@ -6,7 +6,7 @@ export function decodeText(value) {
     return n>0&&n<=0x10ffff?String.fromCodePoint(n):'';
   }).replace(/&(amp|quot|apos|lt|gt|nbsp);/g,(_,v)=>({amp:'&',quot:'"',apos:"'",lt:'<',gt:'>',nbsp:' '}[v]));
 }
-export function directoryLinks(html,base,allowedHosts=[],maxLinks=600) {
+export function directoryLinks(html,base,allowedHosts=[],maxLinks=600,contextual=true) {
   const links=[];
   const clean=html.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi,'').replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi,'');
   for(const match of clean.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi)) {
@@ -16,10 +16,20 @@ export function directoryLinks(html,base,allowedHosts=[],maxLinks=600) {
       const url=new URL(decodeText(href),base);
       if(!['https:','http:'].includes(url.protocol)||url.username||url.password||(allowedHosts.length&&!allowedHosts.includes(url.hostname)))continue;
       const aria=match[1].match(/\baria-label\s*=\s*(["'])(.*?)\1/i)?.[2];
-      const text=decodeText(aria||match[2].replace(/<[^>]*>/g,' ')).replace(/\s+/g,' ').trim();
-      if(text)links.push({url:url.href,text});
+      const title=match[1].match(/\btitle\s*=\s*(["'])(.*?)\1/i)?.[2];
+      const text=decodeText(aria||title||match[2].replace(/<[^>]*>/g,' ')).replace(/\s+/g,' ').trim();
+      links.push({url:url.href,text});
       if(links.length>=maxLinks)break;
     }catch{}
+  }
+  if(contextual){
+    const byUrl=new Map(links.map(link=>[link.url,link]));
+    for(const card of clean.matchAll(/<(tr|article|li)\b[^>]*>([\s\S]{0,12000}?)<\/\1\s*>/gi)){
+      const text=decodeText(card[2].replace(/<[^>]*>/g,' ')).replace(/\s+/g,' ').trim();if(text.length>300)continue;
+      for(const link of directoryLinks(card[2],base,allowedHosts,maxLinks,false)){
+        const existing=byUrl.get(link.url);if(existing&&(!existing.text||/^(?:watch|stream|link|play|source|live|server|hd|sd)(?:\s*\d+)?$/i.test(existing.text)))existing.text=text;
+      }
+    }
   }
   return links;
 }

@@ -59,7 +59,7 @@ export function normalizeCustomSourceUrl(value) {
   try{url=new URL(raw.includes('://')?raw:`https://${raw}`);}catch{throw new Error('ENTER A VALID SOURCE URL');}
   if(excludedPlatform(url.href))throw new Error('USE A LIVE EVENT AGGREGATOR URL');
   if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error('ENTER A VALID SOURCE URL');
-  if(!url.pathname)url.pathname='/';return url.href;
+  if(!url.pathname)url.pathname='/';if(url.href.endsWith('#'))url.hash='';return url.href;
 }
 export function customSourceDomain(value) {try{return new URL(value).hostname.replace(/^www\./i,'').toUpperCase();}catch{return 'SOURCE';}}
 function normalizeProfileUrl(value){return normalizeCustomSourceUrl(value);}
@@ -78,7 +78,7 @@ function cleanStructure(raw={}){
   return {routeStyle,eventPrefixes:list(raw.eventPrefixes),eventHosts:list(raw.eventHosts,8),mirrorLabels:list(raw.mirrorLabels,12),playerHosts:list(raw.playerHosts,12),searchTemplates:list(raw.searchTemplates,8),browserSearch:Boolean(raw.browserSearch)};
 }
 function cleanTest(raw={}){
-  const status=['LEARNED','PARTIAL','UNREACHABLE','FAILED'].includes(String(raw.status||'').toUpperCase())?String(raw.status).toUpperCase():'';
+  const status=['LEARNED','PARTIAL','UNREACHABLE','FAILED','INCOMPLETE'].includes(String(raw.status||'').toUpperCase())?String(raw.status).toUpperCase():'';
   return {status,reason:String(raw.reason||'').slice(0,180),testedAt:Math.max(0,Number(raw.testedAt)||0)};
 }
 function cleanPerformance(raw={}){
@@ -186,7 +186,10 @@ export function recordCustomSourceSuccess(url,startupMs=0,details={},storage=glo
     const learned=cleanStructure(details.structure||{});
     for(const value of learned.searchTemplates)add('searchTemplates',value,8);
     if(learned.browserSearch)structure.browserSearch=true;
-    return {...item,performance:{...old,successes,avgWatchMs,lastSuccessAt:Date.now()},structure};
+    const categories={...item.categories};
+    const sport=String(details.sport||'').toUpperCase();
+    if(CATEGORY_SET.has(sport)&&details.categoryUrl){try{const route=normalizeCustomSourceUrl(details.categoryUrl);if(!likelyEventRoute(route))categories[sport]=[...new Set([route,...(categories[sport]||[])])].slice(0,12);}catch{}}
+    return {...item,categories,performance:{...old,successes,avgWatchMs,lastSuccessAt:Date.now()},structure};
   }),storage);
 }
 export function cleanupCustomSourceProfiles(targetUrl='',storage=globalThis.localStorage){

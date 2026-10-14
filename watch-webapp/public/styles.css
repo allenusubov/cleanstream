@@ -620,3 +620,12 @@ a { text-decoration: none; }
   .custom-source-row{grid-template-columns:24px minmax(0,1fr);}
   .custom-source-actions{grid-column:2;justify-content:flex-start;gap:18px;}
 }
+
+.source-check-tools{display:flex;flex-wrap:wrap;gap:16px 24px;margin:18px 0;font-size:12px;font-weight:700;}
+.source-check-tools .text-action{font-size:inherit;}
+.source-rank{max-width:210px;text-align:right;line-height:1.25;}
+@media(max-width:720px){.source-rank{max-width:115px;font-size:10px;}}
+
+.source-copy{min-width:0;flex:1;}
+.source-name{overflow-wrap:anywhere;}
+.source-rank{flex:0 0 auto;}

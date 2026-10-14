@@ -65,7 +65,7 @@ export async function visit(page,url) {
   return response;
 }
 function htmlMedia(body,base){
-  const text=String(body||'').replace(/\u0026/g,'&').replace(/&amp;/g,'&');
+  const text=String(body||'').replace(/\\u0026/gi,'&').replace(/\\u003d/gi,'=').replace(/\\u003a/gi,':').replace(/\\u002f/gi,'/').replace(/&amp;/g,'&');
   const found=new Map();
   const add=value=>{
     if(!value||excludedPlatform(value))return;
@@ -80,8 +80,9 @@ async function staticExtract(url){
   try{
     const response=await fetchLimited(url,{limit:1536*1024,partial:true});
     const type=response.headers.get('content-type')||'';
-    if(MEDIA.test(response.url)||/mpegurl|^video\/(mp4|webm|quicktime)/i.test(type))return [{url:response.url,isHls:HLS.test(response.url)||/mpegurl/i.test(type),contentType:type}];
-    if(/text\/html|application\/xhtml/i.test(type)||!type)return htmlMedia(response.body.toString(),response.url);
+    const playlist=response.body.subarray(0,100).toString().trimStart().startsWith('#EXTM3U');
+    if(playlist||MEDIA.test(response.url)||/mpegurl|^video\/(mp4|webm|quicktime)/i.test(type))return [{url:response.url,isHls:playlist||HLS.test(response.url)||/mpegurl/i.test(type),contentType:playlist?'application/vnd.apple.mpegurl':type}];
+    if(/text\/html|application\/(?:xhtml|json)/i.test(type)||!type)return htmlMedia(response.body.toString(),response.url);
   }catch{}
   return [];
 }

@@ -1,4 +1,3 @@
-import {aggregatorEvent} from './live-only.js';
 // Send discovery data only. Keep test history and unrelated category profiles on
 // the device rather than resending them for every event.
 export function compactSources(items,item={}){
@@ -16,11 +15,8 @@ export function compactSources(items,item={}){
     return {url:value.url,categories,eventLists:value.eventLists||[],structure};
   });
 }
-export function eligibleEvent(item,now=Date.now()){
-  return aggregatorEvent(item)&&
-    (item.status==='live'||item.status==='scheduled'&&Date.parse(item.startTime)<=now+45*60*1000);
-}
 export function discoveryMessage(data){
-  if(data.partial)return data.sources?.length?'MORE SOURCES CAN BE CHECKED':'CHECK INCOMPLETE — TRY CHECK MORE';
+  if(data.hasMore)return 'NO SOURCES IN THIS BATCH — CHECK MORE';
+  if(data.partial)return data.sources?.length?'MORE SOURCES CAN BE CHECKED':'CHECK INCOMPLETE — TRY RECHECK';
   return {SOURCE_LIST_TOO_LARGE:'SOURCE LIST TOO LARGE — EXPORT AND REDUCE IT',SOURCES_UNAVAILABLE:'SOURCES UNAVAILABLE'}[data.status]||'NO SOURCES FOUND';
 }

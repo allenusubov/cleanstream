@@ -5,10 +5,11 @@ import {resolve,clearResolved} from './lib/resolver.js';
 import {knownEvents,getLiveWindow,getKnownEvent} from './lib/schedules.js';
 import {searchEvents} from './lib/live-search.js';
 import {eventJob} from './lib/discovery.js';
-import {AppError,safeURL} from './lib/network.js';
+import {AppError,safeURL,publicURL} from './lib/network.js';
 import {customRegistry} from './lib/custom-sources.js';
 import {scanSourceProfile} from './lib/source-profile.js';
 import {requestErrorLog} from './lib/error-log.js';
+import {cleanPlaybackHistory} from './public/playback-history.js';
 import {excludedPlatform} from './public/live-only.js';
 export const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
@@ -60,8 +61,8 @@ async function streamEventSources(req,res){
   const event=knownEvents.get(req.params.id);
   if(!event) throw new AppError('EVENT_UNAVAILABLE',404);
   const customSites=await customRegistry(req.body?.customSources||[]);
-  const mode=req.body?.mode==='light'?'light':'deep';
-  const job=eventJob(event,origin(req),customSites,{mode,resume:Boolean(req.body?.resume)});
+  const mode=req.body?.mode==='deep'?'deep':'light';
+  const job=eventJob(event,origin(req),customSites,{mode,resume:Boolean(req.body?.resume),recheck:Boolean(req.body?.recheck),checkedProviderIds:req.body?.checkedProviderIds,playbackHistory:cleanPlaybackHistory(req.body?.playbackHistory)});
   res.setHeader('Content-Type','application/x-ndjson');
   res.setHeader('Cache-Control','no-store, no-transform');
   res.setHeader('X-Accel-Buffering','no');
@@ -108,11 +109,11 @@ app.post('/api/source-test',async(req,res)=>{
   const raw=String(req.body?.url||'').trim();
   const input=raw.includes('://')?raw:`https://${raw}`;
   if(excludedPlatform(input))throw new AppError('LIVE_AGGREGATORS_ONLY',422);
-  const url=await safeURL(input);
+  const url=publicURL(input);
   const profile=await scanSourceProfile(url.href,req.body?.profile||{});
-  let finalUrl=url;try{finalUrl=await safeURL(profile.url||url.href);}catch{}
+  let finalUrl=url;try{finalUrl=publicURL(profile.url||url.href);}catch{}
   res.setHeader('Cache-Control','no-store');
-  res.json({ok:profile.status!=='UNREACHABLE',status:profile.status||'PARTIAL',reachable:Boolean(profile.reachable),
+  res.json({ok:Boolean(profile.reachable),status:profile.status||'PARTIAL',reachable:Boolean(profile.reachable),
     pagesChecked:Number(profile.pagesChecked)||0,reachablePages:Number(profile.reachablePages)||0,
     url:finalUrl.href,host:finalUrl.hostname.replace(/^www\./i,'').toUpperCase(),
     categories:profile.categories||{},eventLists:profile.eventLists||[],support:profile.support||{},structure:profile.structure||{},reason:profile.reason||'',testedAt:profile.testedAt||Date.now()});

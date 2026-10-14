@@ -1,6 +1,7 @@
 import {directoryLinks} from './directory.js';
-import {fetchLimited,safeURL} from './network.js';
+import {fetchLimited,safeURL,publicURL} from './network.js';
 import {withPage,visit} from './resolver.js';
+import {withSignal,currentSignal,eachConcurrent} from './discovery-control.js';
 
 export const CATEGORY_ALIASES={
   // Learn reusable live-event navigation labels.
@@ -209,7 +210,8 @@ async function pageLinks(url,{dynamic=true}={}){
   if(!dynamic || useful>=6)return {url:finalUrl,links:staticLinks,searchTemplates:staticSearch,browserSearch:staticBrowserSearch,reachable:staticWorked,method:staticWorked?'STATIC':'NONE'};
   try{
     const dynamicData=await withPage(async page=>{
-      await visit(page,url);
+      const response=await visit(page,url);
+      if([401,403].includes(response?.status())){const error=new Error('SOURCE_ACCESS_BLOCKED');error.code='SOURCE_ACCESS_BLOCKED';throw error;}
       finalUrl=page.url()||finalUrl;
       const links=await page.locator('a[href],[data-href],[data-url],[onclick]').evaluateAll(nodes=>nodes.slice(0,2200).flatMap(node=>{
         let value=node.href||node.getAttribute('data-href')||node.getAttribute('data-url')||'';
@@ -230,7 +232,7 @@ async function pageLinks(url,{dynamic=true}={}){
         if(!input?.name)return [];
         try{const u=new URL(form.action||document.baseURI,document.baseURI);u.searchParams.set(input.name,'__CLEANSTREAM_QUERY__');return [u.href.replace('__CLEANSTREAM_QUERY__','{query}')];}catch{return [];}
       }));
-      const browserSearch=Boolean(document.querySelector('input[type=\"search\"],input[name=\"q\"],input[name=\"s\"],input[name=\"query\"],input[name=\"search\"],input[name=\"keyword\"],input[name=\"term\"],input[placeholder*=\"search\" i]'));
+      const browserSearch=await page.locator('input[type=search],input[name=q],input[name=s],input[name=query],input[name=search],input[name=keyword],input[name=term],input[placeholder*="search" i]').count()>0;
       return {links,searches,browserSearch};
     });
     return {url:finalUrl,links:dedupeLinks([...staticLinks,...dynamicData.links],finalUrl),searchTemplates:[...new Set([...staticSearch,...dynamicData.searches])].slice(0,8),browserSearch:Boolean(staticBrowserSearch||dynamicData.browserSearch),reachable:true,method:staticWorked?'STATIC+DYNAMIC':'DYNAMIC'};
@@ -258,43 +260,25 @@ function mergeProfiles(profiles){
   return {categories,eventLists,support,structure:{routeStyle,eventPrefixes:eventPrefixes.slice(0,12),eventHosts:eventHosts.slice(0,8),searchTemplates:searchTemplates.slice(0,8),browserSearch}};
 }
 export async function scanSourceProfile(input,hints={}){
-  const root=await safeURL(input);
-  const seeds=[root.href];
-  const addSeed=async value=>{
-    if(seeds.length>=8||!value)return;
-    try{const url=(await safeURL(String(value))).href;if(!seeds.includes(url))seeds.push(url);}catch{}
-  };
-  // Re-test routes we already know. A homepage may be blocked or empty while a
-  // category/events route still works and can teach us more about the site.
-  for(const value of (Array.isArray(hints?.eventLists)?hints.eventLists:[]))await addSeed(value);
-  for(const urls of Object.values(hints?.categories&&typeof hints.categories==='object'?hints.categories:{})){
-    for(const value of (Array.isArray(urls)?urls:[urls])){await addSeed(value);if(seeds.length>=8)break;}
-    if(seeds.length>=8)break;
-  }
-
-  const profiles=[];const hubs=[];let reachablePages=0,pagesChecked=0,finalUrl=root.href;
-  for(const seed of seeds){
-    const page=await pageLinks(seed,{dynamic:true});pagesChecked++;
-    if(!page.reachable)continue;
-    reachablePages++;if(seed===root.href)finalUrl=page.url||finalUrl;
-    const profile=profileFromLinks(page.links,page.url||seed,page.searchTemplates||[],page.browserSearch);profiles.push(profile);
-    for(const hub of profile.hubs||[])if(!hubs.includes(hub))hubs.push(hub);
-  }
-
-  // Crawl a few discovered navigation hubs with cheap static requests. This is
-  // bounded so TEST ALL can learn structure without turning into a site crawl.
-  for(const hub of hubs.slice(0,4)){
-    if(pagesChecked>=12)break;
+  const root=publicURL(input),seeds=[];
+  const add=value=>{try{const url=publicURL(String(value));if(!seeds.includes(url.href)&&seeds.length<5)seeds.push(url.href);}catch{}};
+  // Known category lists can work even when the homepage fails or times out.
+  for(const urls of Object.values(hints?.categories||{}))for(const url of Array.isArray(urls)?urls:[urls])add(url);
+  for(const url of hints?.eventLists||[])add(url);
+  add(root.href);
+  const profiles=[];let reachablePages=0,pagesChecked=0;const errors=[];
+  const outer=currentSignal(),budget=AbortSignal.any([AbortSignal.timeout(12000),...(outer?[outer]:[])]);
+  await eachConcurrent(seeds,2,async seed=>{
+    const signal=AbortSignal.any([budget,AbortSignal.timeout(4500)]);pagesChecked++;
     try{
-      const page=await pageLinks(hub,{dynamic:false});pagesChecked++;
-      if(!page.reachable)continue;reachablePages++;profiles.push(profileFromLinks(page.links,page.url||hub,page.searchTemplates||[],page.browserSearch));
-    }catch{}
-  }
-
-  const merged=mergeProfiles(profiles);
-  const learned=Object.values(merged.categories||{}).reduce((n,urls)=>n+(urls?.length||0),0)+(merged.eventLists?.length||0)+(merged.structure?.searchTemplates?.length||0)+(merged.structure?.browserSearch?1:0);
-  const status=reachablePages===0?'UNREACHABLE':learned?'LEARNED':'PARTIAL';
-  const reason=status==='UNREACHABLE'?'NO REACHABLE PAGES':status==='LEARNED'?`${learned} REUSABLE ROUTE${learned===1?'':'S'} FOUND`:'REACHABLE · NO REUSABLE ROUTES FOUND';
-  return {url:finalUrl,categories:merged.categories,eventLists:merged.eventLists,support:merged.support,structure:merged.structure,
-    status,reason,reachable:reachablePages>0,pagesChecked,reachablePages,testedAt:Date.now()};
+      const page=await withSignal(signal,()=>pageLinks(seed,{dynamic:true}));
+      if(!page.reachable){errors.push(page.error?.code||'CHECK_INCOMPLETE');return;}
+      reachablePages++;profiles.push(profileFromLinks(page.links,page.url||seed,page.searchTemplates||[],page.browserSearch));
+    }catch(error){errors.push(error.code||error.name||'CHECK_INCOMPLETE');}
+  },{signal:budget});
+  const merged=mergeProfiles(profiles),learned=Object.values(merged.categories).reduce((n,urls)=>n+urls.length,0)+merged.eventLists.length;
+  const incomplete=errors.length>0||pagesChecked<seeds.length||budget.aborted;
+  const status=!reachablePages?'INCOMPLETE':incomplete?'PARTIAL':learned?'LEARNED':'PARTIAL';
+  const reason=!reachablePages?'CHECKER COULD NOT VERIFY THE WEBSITE':incomplete?`${learned} ROUTES FOUND · CHECK PARTIAL`:learned?`${learned} REUSABLE ROUTES FOUND`:'REACHABLE · NO REUSABLE ROUTES FOUND';
+  return {url:root.href,...merged,status,reason,reachable:reachablePages>0,pagesChecked,reachablePages,incomplete,testedAt:Date.now()};
 }

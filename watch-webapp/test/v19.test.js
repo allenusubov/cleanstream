@@ -6,7 +6,7 @@ import {customRegistry} from '../lib/custom-sources.js';
 import {mergeProviders} from '../lib/provider-registry.js';
 import {WorkPool,publicURL} from '../lib/network.js';
 import {eachConcurrent,withSignal} from '../lib/discovery-control.js';
-import {compactSources,eligibleEvent,discoveryMessage} from '../public/source-request.js';
+import {compactSources,discoveryMessage} from '../public/source-request.js';
 import {eventMetadata} from '../public/playback-metadata.js';
 import {boundedCastLoad} from '../public/cast-operation.js';
 
@@ -46,14 +46,7 @@ test('all providers beyond twelve can be scheduled with bounded concurrency',asy
   assert.equal(calls,25);assert.equal(cursor,25);assert.equal(peak,3);
 });
 
-test('only live and soon events auto-check; partial checks never claim exhaustive absence',()=>{
-  const now=Date.now();
-  assert.equal(eligibleEvent({status:'live'},now),true);
-  assert.equal(eligibleEvent({status:'scheduled',startTime:new Date(now+30*60000)},now),true);
-  assert.equal(eligibleEvent({status:'scheduled',startTime:new Date(now+90*60000)},now),false);
-  assert.equal(eligibleEvent({status:'live',provider:'youtube'},now),false);
-  assert.match(discoveryMessage({partial:true}),/INCOMPLETE/);
-});
+test('partial checks never claim exhaustive absence',()=>{assert.match(discoveryMessage({partial:true}),/INCOMPLETE/);assert.match(discoveryMessage({hasMore:true}),/BATCH/);});
 
 test('event titles and transparent league artwork replace generic playback branding',()=>{
   const meta=eventMetadata({title:'KNICKS VS CELTICS',league:'NBA'},{},'https://app.example');

@@ -3,15 +3,17 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {eachConcurrent,withSignal,aborted} from './discovery-control.js';
 import {normalize,matchesParticipants} from '../public/events.js';
-import {withPage,visit,resolve,validate,quickValidate} from './resolver.js';
+import {withPage,visit,resolve,clearResolved} from './resolver.js';
 import {AppError,WorkPool,fetchLimited} from './network.js';
 import {streamedPages} from './catalog.js';
 import {directoryLinks} from './directory.js';
 import {CATEGORY_ALIASES} from './source-profile.js';
+import {adapterRoutes,structuredEventLinks} from './provider-adapters.js';
+import {cleanPlaybackHistory,historyPriority,hostOf} from '../public/playback-history.js';
 
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
 const builtinResults=new Map();
-const jobs=new Map(), history=new Map(), indexes=new Map(), indexJobs=new Map(), mirrorCache=new Map(), mirrorJobs=new Map(), routeHistory=new Map(), mirrorHistory=new Map(), eventPageHistory=new Map();
+const jobs=new Map(), indexes=new Map(), indexJobs=new Map(), mirrorCache=new Map(), mirrorJobs=new Map(), routeHistory=new Map(), mirrorHistory=new Map(), eventPageHistory=new Map();
 const pool=new WorkPool(Math.max(1,Math.min(4,Number(process.env.EVENT_JOB_CONCURRENCY)||2)));
 const idFor=value=>crypto.createHash('sha256').update(value).digest('hex').slice(0,16);
 const MEDIA=/\.(m3u8|mp4|m4v|mov|webm)(?:$|\?)/i;
@@ -82,8 +84,8 @@ async function readIndex(site,indexUrl,event) {
   const job=(async()=>{
     let staticLinks=[], staticError=null;
     try {
-      const response=await fetchLimited(indexUrl,{limit:2*1024*1024});
-      staticLinks=directoryLinks(response.body.toString(),response.url,site.allowedHosts,site.custom?1500:600);
+      const response=await fetchLimited(indexUrl,{limit:2*1024*1024,partial:true});
+      staticLinks=[...directoryLinks(response.body.toString(),response.url,site.allowedHosts,site.custom?1500:600),...structuredEventLinks(response.body.toString(),response.url)].filter(link=>hostAllowed(new URL(link.url).hostname,site.allowedHosts));
       const fragmentRoute=Boolean(new URL(indexUrl).hash);
       // Hash routes (for example /#nfl) are client-side navigation. A normal HTTP
       // fetch only sees the root document, so it cannot prove the selected
@@ -109,7 +111,7 @@ async function readIndex(site,indexUrl,event) {
             raw=code.match(/(?:location(?:\.href)?\s*=|open\s*\()\s*['\"]([^'\"]+)['\"]/i)?.[1]||'';
           }
           if(!raw)return [];
-          try{const u=new URL(raw,document.baseURI);if(!/^https?:$/.test(u.protocol))return [];return [{url:u.href,text:node.getAttribute('aria-label')||node.textContent?.trim()||node.getAttribute('title')||''}];}
+          try{const u=new URL(raw,document.baseURI);if(!/^https?:$/.test(u.protocol))return [];return [{url:u.href,text:node.getAttribute('aria-label')||node.getAttribute('title')||((!node.textContent?.trim()||/^(watch|stream|play|link|source)(?:\s*\d+)?$/i.test(node.textContent.trim()))?(node.closest('tr,article,li,[data-event]')?.textContent||node.textContent||'').trim().slice(0,300):node.textContent.trim())}];}
           catch{return [];}
         }),site.custom?2200:1000);
         return links.filter(link=>{try{const u=new URL(link.url);return ['http:','https:'].includes(u.protocol)&&hostAllowed(u.hostname,site.allowedHosts);}catch{return false;}});
@@ -157,27 +159,29 @@ function structurePriority(site,link){
   }catch{return 0;}
 }
 
-async function genericPages(site,event,{light=false}={}) {
-  const roots=rootsFor(site,event);
-  const categories=await categoryPages(site,event,{light});
-  const routeKey=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
-  const learned=routeHistory.get(routeKey);
-  const urls=[...new Set([...(learned?[learned]:[]),...categories,...roots])];
-  const found=[];
+export async function genericPages(site,event,{light=false}={}) {
+  const roots=rootsFor(site,event),key=String(event.league||event.sport||'').toUpperCase();
+  const configured=site.categories?.[key]??site.categories?.[String(event.sport||'').toUpperCase()]??site.categories?.['*'];
+  const routeKey=`${site.id}|${key}`,learned=routeHistory.get(routeKey);
+  const explicit=configuredUrls(site,configured,event,roots[0]);
+  const urls=[...new Set([...(learned?[learned]:[]),...explicit,...adapterRoutes(site,event),...(site.structure?.searchTemplates||[]).map(url=>fillTemplate(url,event))])];
   const shortcut=eventPageHistory.get(`${site.id}|${event.id}`);
-  if(shortcut&&Date.now()-shortcut.time<8*60*60*1000){found.push({url:shortcut.url,text:event.title,shortcut:true});if(light)return found;}
-  for(const indexUrl of urls) {
-    try {
+  if(shortcut&&Date.now()-shortcut.time<30*60*1000)return [{url:shortcut.url,text:event.title,categoryUrl:shortcut.categoryUrl||''}];
+  const checked=new Set();
+  async function inspect(indexUrl){
+    if(checked.has(indexUrl))return [];checked.add(indexUrl);aborted();
+    try{
       const links=await readIndex(site,indexUrl,event);
-      const ordered=[...links].sort((a,b)=>structurePriority(site,b)-structurePriority(site,a));
-      for(const link of ordered) if(linkMatchesEvent(link,event)) {
-        found.push(link);
-        routeHistory.set(routeKey,indexUrl);
-        if(light)return [link];
-      }
-    } catch { /* Try the next category/index/search page. */ }
+      const found=links.filter(link=>linkMatchesEvent(link,event)).sort((a,b)=>structurePriority(site,b)-structurePriority(site,a));
+      if(found.length){routeHistory.set(routeKey,indexUrl);return found.slice(0,light?1:2).map(link=>({...link,categoryUrl:indexUrl}));}
+    }catch(error){aborted();}
+    return [];
   }
-  return [...new Map(found.map(page=>[page.url,page])).values()];
+  // Saved current-event lists are tried before any homepage/category rediscovery.
+  for(const indexUrl of urls){const found=await inspect(indexUrl);if(found.length)return found;}
+  const categories=await categoryPages(site,event,{light});
+  for(const indexUrl of [...categories,...roots]){const found=await inspect(indexUrl);if(found.length)return found;}
+  return [];
 }
 
 function targetKey(target) {return `${target.kind||'page'}|${target.url}`;}
@@ -315,19 +319,10 @@ export function siteSupportsEvent(site,event) {
   return leagues.includes('*')||eventKeys.some(key=>leagues.includes(key));
 }
 async function fastCandidates(target,origin,onCandidate=()=>{}) {
-  // Surface discovered direct media immediately; actual device playback is the
-  // final compatibility test.
-  const result=await resolve(target.url,origin,{progress:false});
-  const candidates=result.candidates.slice(0,8);
-  for(const [i,candidate] of candidates.entries())onCandidate({...candidate,sourceUrl:target.parentUrl||target.url},i);
-  const checks=await Promise.allSettled(candidates.map(candidate=>quickValidate(candidate)));
-  aborted();
-  for(const [i,check] of checks.entries())if(check.status==='rejected'&&['NO_MEDIA','DIRECT_BLOCKED'].includes(check.reason?.code))onCandidate({...candidates[i],unavailable:true},i);
-  return checks.flatMap((item,i)=>item.status==='fulfilled'?[{...item.value,sourceUrl:target.parentUrl||target.url}]:['NO_MEDIA','DIRECT_BLOCKED'].includes(item.reason?.code)?[]:[{...candidates[i],sourceUrl:target.parentUrl||target.url,provisional:true}]);
-}
-function siteStats(site,event){
-  const key=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
-  return [key,history.get(key)||{success:0,attempts:0,totalMs:0}];
+  const result=await resolve(target.url,origin,{progress:false});aborted();
+  const candidates=result.candidates.slice(0,8).map(item=>({...item,sourceUrl:target.parentUrl||target.url,provisional:true,castEligible:false}));
+  candidates.forEach((item,index)=>onCandidate(item,index));
+  return candidates;
 }
 export function sourceSupportState(site,event){
   const keys=[String(event?.league||'').toUpperCase(),String(event?.sport||'').toUpperCase()].filter(Boolean);
@@ -337,44 +332,41 @@ export function sourceSupportState(site,event){
   }
   return 'UNKNOWN';
 }
-function sitePriority(site,event){
-  const [,stats]=siteStats(site,event);
-  const persisted=site?.performance||{};
-  const attempts=stats.attempts+(Number(persisted.successes)||0)+(Number(persisted.failures)||0);
-  const success=stats.success+(Number(persisted.successes)||0);
-  const avgNow=stats.success?stats.totalMs/stats.success:0;
-  const avgSaved=Number(persisted.avgWatchMs)||0;
-  const avg=avgNow&&avgSaved?(avgNow+avgSaved)/2:(avgNow||avgSaved||15000);
-  const reliability=attempts?success/attempts:0;
-  const support=sourceSupportState(site,event)==='YES'?45:0;
-  const recent=Number(persisted.lastSuccessAt)&&Date.now()-Number(persisted.lastSuccessAt)<7*86400000?8:0;
-  return support+recent+reliability*100-Math.min(avg/250,40);
+export function providerPriority(site,event,playbackHistory=[]){
+  const host=hostOf(site.displayHost||site.sourceRoot||site.indexUrls?.[0]||'');
+  const sport=String(event.league||event.sport||'OTHER').toUpperCase();
+  const exact=playbackHistory.filter(value=>value.host===host&&value.sport===sport);
+  const records=exact.length?exact:playbackHistory.filter(value=>value.host===host);
+  const evidence=records.length?Math.max(...records.map(value=>historyPriority(value))):0;
+  return evidence+(sourceSupportState(site,event)==='YES'?15:0)+(site.events?.[event.id]?25:site.type==='streamed'?20:0);
 }
 function pendingSource(site,target,event,score=25){
   const stableId=idFor(`${event.id}|${site.id}|${target.kind||'page'}|${target.url}`);
   return {
     id:stableId,siteId:site.id,name:site.name,displayName:displayName(site,target.parentUrl||target.url),score,eventId:event.id,
-    pending:true,deepVerified:false,mirrorLabel:target.text||'',sourceRoot:site.sourceRoot||site.indexUrls?.[0]||'',sourceUrl:target.kind==='page'?target.url:(target.parentUrl||target.url)
+    providerHost:hostOf(site.displayHost||site.sourceRoot||site.indexUrls?.[0]||''),categoryUrl:target.categoryUrl||'',pending:true,deepVerified:false,mirrorLabel:target.text||'',sourceRoot:site.sourceRoot||site.indexUrls?.[0]||'',sourceUrl:target.kind==='page'?target.url:(target.parentUrl||target.url)
   };
 }
-export function eventJob(event,origin,customSites=[],{mode='deep',resume=false}={}) {
+export function eventJob(event,origin,customSites=[],{mode='light',resume=false,recheck=false,playbackHistory=[],checkedProviderIds=[]}={}) {
   if(!watchable(event)) throw new AppError('EVENT_UNAVAILABLE',409);
-  const light=mode==='light';
+  const light=mode!=='deep';
+  playbackHistory=cleanPlaybackHistory(playbackHistory);
   const customKey=idFor(customSites.map(site=>JSON.stringify({
     root:site.indexUrls?.[0]||site.id,categories:site.categories||{},eventListUrls:site.eventListUrls||[],support:site.support||{},structure:site.structure||{}
   })).sort().join('|'));
-  const baseKey=`${origin}|${event.id}|${customKey}`;
+  const baseKey=`${origin}|${event.id}|${customKey}|${idFor(JSON.stringify(playbackHistory))}`;
   const key=`${baseKey}|${light?'light':'deep'}`;
   const old=jobs.get(key);
-  if(old && !old.controller?.signal.aborted && (!old.done || (!resume&&old.expiresAt>Date.now()))) return old;
-  const seed=(resume?old?.sources:!light?jobs.get(`${baseKey}|light`)?.sources:[])||[];
+  if(!recheck&&old && !old.controller?.signal.aborted && (!old.done || (!resume&&old.expiresAt>Date.now()))) return old;
+  const seed=(!recheck&&(resume?old?.sources:!light?jobs.get(`${baseKey}|light`)?.sources:[]))||[];
   const controller=new AbortController();
-  const job={sources:seed.filter(source=>source.expiresAt>Date.now()).map(source=>({...source})),done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false,mode:light?'light':'deep',controller,checked:resume?old?.cursor||0:0,total:0,partial:false,cursor:resume?old?.cursor||0:0,startedAt:0,firstSourceMs:null};
+  const job={sources:seed.filter(source=>source.expiresAt>Date.now()).map(source=>({...source})),done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false,mode:light?'light':'deep',controller,checked:resume&&!recheck?old?.cursor||0:0,total:0,partial:false,cursor:resume&&!recheck?old?.cursor||0:0,startedAt:0,firstSourceMs:null,siteOrder:resume&&!recheck?old?.siteOrder||null:null,continuation:false,completedSiteIds:new Set(resume&&!recheck?[...(old?.completedSiteIds||[]),...(Array.isArray(checkedProviderIds)?checkedProviderIds.slice(0,4000).filter(value=>typeof value==='string'&&value.length<=128):[])]:[])};
   job.cancel=()=>controller.abort(new DOMException('Cancelled','AbortError'));
-  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status,mode:job.mode,checked:job.checked,total:job.total,partial:job.partial,firstSourceMs:job.firstSourceMs});
+  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status,mode:job.mode,checked:job.checked,total:job.total,partial:job.partial,hasMore:job.continuation,checkedProviderIds:[...job.completedSiteIds],firstSourceMs:job.firstSourceMs,elapsedMs:job.startedAt?Date.now()-job.startedAt:0});
   job.publish=()=>{for(const listener of job.listeners)listener(job.snapshot());};
   const upsert=source=>{
-    const existing=job.sources.find(item=>item.id===source.id);
+    const existing=job.sources.find(item=>item.id===source.id||item.mediaUrl&&item.mediaUrl===source.mediaUrl);
+    if(existing&&existing.score>source.score)return existing;
     if(existing)Object.assign(existing,source);
     else job.sources.push(source);
     if(job.firstSourceMs===null&&source.mediaUrl)job.firstSourceMs=Date.now()-job.startedAt;
@@ -387,39 +379,49 @@ export function eventJob(event,origin,customSites=[],{mode='deep',resume=false}=
   };
   job.start=()=>{
     if(job.started)return;job.started=true;job.startedAt=Date.now();
-    const budget=Math.max(5000,Math.min(120000,Number(process.env.DISCOVERY_TIMEOUT_MS)||45000));
+    const budget=Math.max(5000,Math.min(120000,Number(process.env.DISCOVERY_TIMEOUT_MS)||(light?12000:25000)));
     const timer=setTimeout(()=>controller.abort(new Error('SEARCH_LIMIT_REACHED')),budget);
     job.promise=withSignal(controller.signal,()=>pool.run(async()=>{
-      const sites=mergeProviders(registry,customSites).filter(site=>(site.type==='streamed'||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event));
+      let sites=mergeProviders(registry,customSites).filter(site=>(site.type==='streamed'||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event));
+      const sport=String(event.league||event.sport||'OTHER').toUpperCase();
+      sites=sites.map(site=>{
+        const host=hostOf(site.displayHost||site.indexUrls?.[0]||'');
+        const learned=playbackHistory.filter(value=>value.host===host&&value.sport===sport&&value.lastSuccessAt&&value.categoryUrl).sort((a,b)=>b.lastSuccessAt-a.lastSuccessAt)[0];
+        return learned?{...site,categories:{...site.categories,[sport]:[learned.categoryUrl,...(site.categories?.[sport]||[])]}}:site;
+      });
+      if(job.siteOrder){const positions=new Map(job.siteOrder.map((id,index)=>[id,index]));sites.sort((a,b)=>(positions.get(a.id)??Infinity)-(positions.get(b.id)??Infinity));}
+      else {sites.sort((a,b)=>providerPriority(b,event,playbackHistory)-providerPriority(a,event,playbackHistory));job.siteOrder=sites.map(site=>site.id);}
       job.total=sites.length;job.publish();
-      let matched=0,unavailable=0;
+      let matched=0,unavailable=0,timedOut=0;
       const checkSite=async site=>{
         aborted();
         const cacheKey=`${origin}|${event.id}|${site.id}`;
-        if(!site.custom){
+        if(recheck){
+          builtinResults.delete(cacheKey);eventPageHistory.delete(`${site.id}|${event.id}`);
+          for(const key of indexes.keys())if(key.startsWith(site.id+'|'))indexes.delete(key);
+          for(const key of mirrorCache.keys())if(key.includes('|'+site.id+'|'))mirrorCache.delete(key);
+        }
+        if(!site.custom&&!recheck){
           const ready=(builtinResults.get(cacheKey)||[]).filter(source=>source.expiresAt>Date.now()+3000);
           for(const source of ready)upsert({...source});
-          if(light&&ready.length){job.checked++;job.publish();return;}
+          if(light&&ready.length)return;
         }
-        const [statsKey,stats]=siteStats(site,event);
         const mirrorKey=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
         const resolveTarget=async target=>{
-          const pending=pendingSource(site,target,event,25+sitePriority(site,event));
-          stats.attempts++;
+          const pending=pendingSource(site,target,event,25+providerPriority(site,event,playbackHistory));
           try{
+            if(recheck)clearResolved(target.url,origin);
             const publish=(media,index=0)=>{
               const id=idFor(`${pending.id}|${media.mediaUrl}`);
-              upsert({...pending,...media,id,pending:false,unavailable:Boolean(media.unavailable),score:50,deepVerified:false});
+              upsert({...pending,...media,id,pending:false,unavailable:Boolean(media.unavailable),score:50+providerPriority(site,event,playbackHistory),deepVerified:false});
             };
             const candidates=(await fastCandidates(target,origin,publish)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
             if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
-            stats.success++;stats.totalMs+=candidates[0]?.startupMs||0;
-            const durablePage=target.parentUrl||target.url;if(durablePage)eventPageHistory.set(`${site.id}|${event.id}`,{url:durablePage,time:Date.now()});
-            const reliability=stats.success/stats.attempts;
+            const durablePage=target.parentUrl||target.url;if(durablePage)eventPageHistory.set(`${site.id}|${event.id}`,{url:durablePage,time:Date.now(),categoryUrl:target.categoryUrl||''});
             for(const [index,media] of candidates.entries()){
-              const score=100+reliability*20-Math.min((media.startupMs||0)/1000,25)+Math.min((media.quality||0)/1080,1)*5-index*.25;
+              const score=100+providerPriority(site,event,playbackHistory)-index*.25;
               const id=idFor(`${pending.id}|${media.mediaUrl}`);
-              const active=upsert({...pending,...media,id,pending:false,unavailable:false,score,deepVerified:!media.isHls,verifiedAt:media.verifiedAt});
+              const active=upsert({...pending,...media,id,pending:false,unavailable:false,score,deepVerified:false,verifiedAt:media.verifiedAt});
               if(!site.custom){
                 const cached=builtinResults.get(cacheKey)||[];
                 builtinResults.set(cacheKey,[...cached.filter(value=>value.id!==active.id&&value.expiresAt>Date.now()),{...active}]);
@@ -436,11 +438,11 @@ export function eventJob(event,origin,customSites=[],{mode='deep',resume=false}=
           matched+=pagesToCheck.length;if(!pagesToCheck.length)return;
           const defaultTasks=[],mirrorTasks=[];
           for(const page of pagesToCheck){
-            const baseTarget={kind:'page',url:page.url,text:'DEFAULT',parentUrl:page.url};
+            const baseTarget={kind:'page',url:page.url,text:'DEFAULT',parentUrl:page.url,categoryUrl:page.categoryUrl||''};
             defaultTasks.push(resolveTarget(baseTarget));
             if(!light)mirrorTasks.push(async()=>{
               const targets=await mirrorTargets(site,page,event,{light:false});
-              const unique=[...new Map(targets.map(target=>[targetKey(target),{...target,parentUrl:page.url}])).values()].filter(target=>target.url!==page.url||target.kind!=='page');
+              const unique=[...new Map(targets.map(target=>[targetKey(target),{...target,parentUrl:page.url,categoryUrl:page.categoryUrl||''}])).values()].filter(target=>target.url!==page.url||target.kind!=='page');
               await eachConcurrent(unique,2,resolveTarget);
             });
           }
@@ -448,15 +450,20 @@ export function eventJob(event,origin,customSites=[],{mode='deep',resume=false}=
           if(!controller.signal.aborted)await eachConcurrent(mirrorTasks,1,task=>task());
           aborted();
         }catch{unavailable++;}
-        finally{history.set(statsKey,stats);if(!controller.signal.aborted){job.checked++;job.publish();}}
       };
-      // Independent bounded lanes: custom-site volume cannot hold up built-ins.
-      // Every site remains eligible; stale learned NO is not an exclusion.
-      const builtins=sites.filter(site=>!site.custom),custom=sites.filter(site=>site.custom);
-      const builtinWork=eachConcurrent(builtins,2,checkSite);
-      const customWork=eachConcurrent(custom,2,checkSite,{start:job.cursor,onComplete:cursor=>{job.cursor=cursor;}});
-      await Promise.allSettled([builtinWork,customWork]);
-      job.partial=controller.signal.aborted&&job.checked<job.total;
+      const eligibleIds=new Set(sites.map(site=>site.id));
+      job.completedSiteIds=new Set([...job.completedSiteIds].filter(id=>eligibleIds.has(id)));
+      job.checked=job.completedSiteIds.size;
+      const batch=sites.filter(site=>!job.completedSiteIds.has(site.id)).slice(0,4);
+      await eachConcurrent(batch,4,async site=>{
+        const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(light?6500:16000)]);
+        try{await withSignal(signal,()=>checkSite(site));}finally{
+          if(signal.aborted&&!controller.signal.aborted)timedOut++;
+          if(!controller.signal.aborted){job.completedSiteIds.add(site.id);job.checked=job.completedSiteIds.size;job.cursor=job.checked;job.publish();}
+        }
+      },{signal:controller.signal});
+      job.continuation=sites.some(site=>!job.completedSiteIds.has(site.id));
+      job.partial=job.continuation||timedOut>0;
       const ready=job.sources.filter(source=>source.mediaUrl&&!source.unavailable).length;
       job.status=ready?'READY':job.partial?'SEARCH_LIMIT_REACHED':unavailable===sites.length&&sites.length?'SOURCES_UNAVAILABLE':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
     })).catch(error=>{job.partial=true;job.status=job.sources.length?'READY':error.code||'SEARCH_LIMIT_REACHED';}).finally(()=>{

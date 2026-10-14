@@ -1,8 +1,10 @@
+import {PlaybackEvidence,recordPlayback,playbackContext,loadPlaybackHistory,hostOf} from './playback-history.js';
+import {inspectionLabel,inspectionFailure,routeCount} from './source-status.js';
 import {eventMetadata,updatePlaybackMetadata} from './playback-metadata.js';
 import {boundedCastLoad} from './cast-operation.js';
 import {initSearch} from './search.js';
 import {livePosition} from './live-position.js';
-import {loadCustomSources,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,cleanupCustomSourceProfiles,removeCustomSource,removeCustomSources,saveCustomSources,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
+import {loadCustomSources,recordCustomSourceSuccess,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,cleanupCustomSourceProfiles,removeCustomSource,removeCustomSources,saveCustomSources,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
 import {loadEventPreferences,setEventCategoryEnabled,setEventCategoryOrder,setEventFavorites,tickerEvents,compactEventTitle} from './event-preferences.js';
 const $ = selector => document.querySelector(selector);
 const homeView = $('[data-view="home"]');
@@ -47,6 +49,7 @@ let selectedSources=new Set();
 let deletedSources=[];
 
 let hls = null;
+let playbackAttempt=null,pendingMediaError=null;
 let candidate = null;
 let sourceUrl = '';
 let operation = null;
@@ -65,19 +68,13 @@ let castLoadVersion=0;
 let desiredCastItem=null;
 let castLoadPromise = null;
 let tvMode = null;
-let nativeProbeAt = 0;
-let nativeProbePending = false;
 let alternatives = [];
 let currentEvent = null;
-let recovering = false;
 let userPaused = true;
-let recoveryAttempts = 0;
-let lastRecovery = 0;
 let failedSources = new Set();
 let castOwned=false;
 let remoteProgress=0;
 let remotePosition=-1;
-let recoveryCycles=0;
 let liveWindowEvents=[];
 let liveWindowUpdated=0;
 let tickerTimer=0,tickerPauseUntil=0,tickerSetWidth=0,tickerNormalizing=false,tickerAutoScrolling=false,tickerAutoScrollAt=0,tickerHovered=false,tickerAnimating=false,tickerAnimationFrame=0,tickerEventCount=0,tickerSuppressClickUntil=0;
@@ -98,7 +95,7 @@ const friendly = {
   LIVE_AGGREGATORS_ONLY:'USE A LIVE EVENT LINK FROM AN AGGREGATOR'
 };
 const search = initSearch(async (item, items, event) => {
-  search.stop();currentEvent=event; alternatives=items; failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;
+  search.stop();currentEvent=event; alternatives=items; failedSources=new Set();
   sourceUrl=item.sourceUrl;streamInput.value=sourceUrl;
   navigate({view:'player',url:sourceUrl,q:search.query,event:event.id});
   showView('player');userPaused=false;
@@ -112,7 +109,7 @@ const search = initSearch(async (item, items, event) => {
   });
 },q=>{
   leavePlayer();showView('home');navigate({view:'search',q});
-});
+},()=>playbackContext(navigator.userAgent,castConnected()?'cast':video.webkitCurrentPlaybackTargetIsWireless?'airplay':'local'));
 
 function sourceKey(item){return item?.id||item?.mediaUrl||item?.sourceUrl||'';}
 function sourceLabel(item,index=0){
@@ -321,8 +318,17 @@ async function playItem(item,signal,toTV=false) {
     const data=await apiResolve(signal,true);
     item={...item,...data[0]};
   }
-  if(toTV){await loadOnTV(item,signal);candidate=item;}
-  else await attachLocal(item,signal);
+  try{
+    if(toTV){await loadOnTV(item,signal);candidate=item;}
+    else await attachLocal(item,signal);
+  }catch(error){
+    if(signal?.aborted)throw error;
+    // A signed URL may have expired. One fresh extraction belongs to this click.
+    if(!toTV&&['TIMEOUT','TOKEN_EXPIRED','ACCESS_DENIED'].includes(failureReason(error))){
+      try{const fresh=(await apiResolve(signal,true))[0];if(fresh?.mediaUrl&&fresh.mediaUrl!==item.mediaUrl){item={...item,...fresh};await attachLocal(item,signal);return;}}catch(next){if(signal?.aborted)throw next;error=next;}
+    }
+    recordPlaybackFailure(error);throw error;
+  }
   const route=new URL(location.href);
   if(route.searchParams.has('watch') && route.searchParams.get('watch')!==sourceUrl) {
     route.searchParams.set('watch',sourceUrl);history.replaceState(history.state,'',route);
@@ -335,38 +341,44 @@ function readable(error) {
   if(error?.name==='AbortError')return 'CONNECTION INTERRUPTED — TRY AGAIN';
   return 'STREAM UNAVAILABLE — TRY REFRESH OR ANOTHER SOURCE';
 }
-async function recoverStream() {
-  if(document.hidden||video.webkitCurrentPlaybackTargetIsWireless)return;
-  if(recovering || busy || userPaused || !candidate || Date.now()-lastRecovery<15000)return;
-  if(++recoveryCycles>4){userPaused=true;say("NO WORKING SOURCES — PRESS REFRESH TO TRY AGAIN");return;}
-  recovering=true;lastRecovery=Date.now();
-  const toTV=Boolean(castOwned && castSession());
-  await runOperation(async signal=>{
-    say('STREAM INTERRUPTED — RECONNECTING');
-    try {
-      if(recoveryAttempts++<1) {await playItem(candidate,signal,toTV);return;}
-    }catch(error){if(signal.aborted)throw error;}
-    failedSources.add(candidate.id);
-    const available=[...alternatives,...(currentEvent?search.getSources(currentEvent.id):[])];
-    const attempted=new Set();
-    for(const next of available) {
-      if(failedSources.has(next.id)||attempted.has(next.id))continue;
-      attempted.add(next.id);say('STREAM INTERRUPTED — SWITCHING SOURCE');
-      try{await playItem(next,signal,toTV);return;}catch(error){if(signal.aborted)throw error;failedSources.add(next.id);}
-    }
-    // Refresh the durable source page only after cached alternatives are exhausted.
-    say('CHECKING FOR A FRESH SOURCE');
-    try{await resolveAndPlay(signal,toTV,true);return;}catch(error){if(signal.aborted)throw error;}
-    if(currentEvent) {
-      const fresh=await search.refreshSources(currentEvent,null,signal);
-      for(const next of fresh) {
-        if(next.expiresAt<Date.now()||failedSources.has(next.id))continue;
-        try{await playItem(next,signal,toTV);alternatives=fresh;return;}catch(error){if(signal.aborted)throw error;}
-      }
-    }
-    userPaused=true;throw new Error('SOURCE_UNAVAILABLE');
+function startPlaybackFeedback(item,mode='local'){
+  const event=currentEvent,context=playbackContext(navigator.userAgent,mode);
+  const attempt={item,event,context,startedAt:Date.now(),failed:false,firstProgressAt:0};
+  attempt.evidence=new PlaybackEvidence(()=>{
+    if(playbackAttempt!==attempt)return;
+    const startupMs=Math.max(0,(attempt.firstProgressAt||Date.now())-attempt.startedAt);
+    recordPlayback(item,event,context,'success',{startupMs});
+    if(item.sourceRoot)recordCustomSourceSuccess(item.sourceRoot,startupMs,{eventUrl:item.sourceUrl,mediaUrl:item.mediaUrl,mirrorLabel:item.mirrorLabel,categoryUrl:item.categoryUrl,sport:event?.league||event?.sport});
+    window.dispatchEvent(new CustomEvent('cleanstream:playback-history-changed'));
   });
-  recovering=false;
+  playbackAttempt=attempt;
+}
+function samplePlayback(){
+  const attempt=playbackAttempt;if(!attempt)return;
+  const onTV=casting(),mode=onTV?'cast':video.webkitCurrentPlaybackTargetIsWireless?'airplay':'local';
+  if(attempt.context!==playbackContext(navigator.userAgent,mode)){startPlaybackFeedback(attempt.item,mode);return;}
+  const position=onTV?remotePlayer?.currentTime:video.currentTime;
+  const playing=onTV?remotePlayer?.playerState==='PLAYING'&&!remotePlayer.isPaused:!video.paused&&!video.ended&&video.readyState>=3&&video.videoWidth>0&&!buffering;
+  if(playing&&attempt.evidence.last&&position>attempt.evidence.last.position&&!attempt.firstProgressAt)attempt.firstProgressAt=Date.now();
+  attempt.evidence.sample(position,playing);
+}
+function failureReason(error){
+  const code=String(error?.code||error?.message||'');
+  if(/401|403/.test(code))return 'ACCESS_DENIED';
+  if(/404|EXPIRED/.test(code))return 'TOKEN_EXPIRED';
+  if(/TIMED OUT|TIMEOUT|TIMED_OUT/.test(code))return 'TIMEOUT';
+  if(/DECODE|CODEC|SUPPORTED/.test(code))return 'FORMAT_UNSUPPORTED';
+  if(/NETWORK/.test(code))return 'NETWORK_ERROR';
+  return 'PLAYBACK_FAILED';
+}
+function recordPlaybackFailure(error){
+  if(error?.name==='AbortError'||!playbackAttempt||playbackAttempt.failed)return;
+  playbackAttempt.failed=true;playbackAttempt.evidence.finished=true;
+  recordPlayback(playbackAttempt.item,playbackAttempt.event,playbackAttempt.context,'failure',{reason:failureReason(error)});
+}
+function playbackInterrupted(error=new Error('PLAYBACK_FAILED')){
+  if(!candidate||busy||userPaused||document.hidden||video.webkitCurrentPlaybackTargetIsWireless)return;
+  recordPlaybackFailure(error);userPaused=true;say('STREAM INTERRUPTED — PRESS REFRESH OR CHOOSE ANOTHER SOURCE');
 }
 
 function showView(name) {
@@ -420,8 +432,8 @@ function renderSourceProfile(copy,item) {
   const entries=[];
   if(item.test?.status){
     const line=document.createElement('div');line.className='custom-source-profile-line';
-    const tag=document.createElement('span');tag.className='custom-source-profile-label';tag.textContent=`TEST · ${item.test.status}`;
-    const value=document.createElement('span');value.className='custom-source-profile-link';value.textContent=item.test.reason||'TESTED';line.append(tag,value);profile.append(line);
+    const tag=document.createElement('span');tag.className='custom-source-profile-label';tag.textContent='LAST CHECK';
+    const value=document.createElement('span');value.className='custom-source-profile-link';value.textContent=['FAILED','UNREACHABLE'].includes(item.test.status)?'CHECK COULD NOT COMPLETE':item.test.reason||inspectionLabel(item);line.append(tag,value);profile.append(line);
   }
   for(const [key,urls] of Object.entries(item.categories||{}))for(const url of urls)entries.push([key,url]);
   for(const url of item.eventLists||[])entries.push(['EVENTS',url]);
@@ -460,8 +472,8 @@ async function testCustomSourceProfile(item){
   const response=await fetch('/api/source-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
     url:current.url,profile:{categories:current.categories||{},eventLists:current.eventLists||[],support:current.support||{},structure:current.structure||{}}
   })});
-  if(!response.ok)throw new Error('SOURCE TEST FAILED');
-  const data=await response.json();
+  let data;try{data=await response.json();}catch{throw new Error('CHECK INCOMPLETE');}
+  if(!response.ok){const error=new Error(data.code||'CHECK INCOMPLETE');error.code=data.code;throw error;}
   mergeCustomSourceProfile(current.url,{categories:data.categories||{},eventLists:data.eventLists||[],support:data.support||{},structure:data.structure||{},test:{status:data.status||'PARTIAL',reason:data.reason||'',testedAt:data.testedAt||Date.now()},testedAt:data.testedAt||Date.now()});
   // TEST itself should never leave behind random title pages or pagination copies.
   cleanupCustomSourceProfiles(current.url);
@@ -482,13 +494,13 @@ async function testAllCustomSources(){
       const i=index++;if(i>=items.length)return;const item=items[i];
       try{
         const data=await testCustomSourceProfile(item);
-        if(data.status==='LEARNED')learned++;else if(data.status==='UNREACHABLE')unreachable++;else partial++;
-      }catch{failed++;mergeCustomSourceProfile(item.url,{test:{status:'FAILED',reason:'TEST REQUEST FAILED',testedAt:Date.now()}});}
+        if(data.status==='LEARNED')learned++;else if(['UNREACHABLE','INCOMPLETE'].includes(data.status))unreachable++;else partial++;
+      }catch(error){failed++;mergeCustomSourceProfile(item.url,{test:inspectionFailure(error)});}
       done++;renderSettingsSources();settingsMessage.textContent=`TESTING ${done} / ${items.length}`;
     }
   });
   await Promise.all(workers);testAllSourcesButton.disabled=false;renderSettingsSources();
-  const summary=[];if(learned)summary.push(`${learned} LEARNED`);if(partial)summary.push(`${partial} PARTIAL`);if(unreachable)summary.push(`${unreachable} UNREACHABLE`);if(failed)summary.push(`${failed} FAILED`);
+  const summary=[];if(learned)summary.push(`${learned} LEARNED`);if(partial)summary.push(`${partial} PARTIAL`);if(unreachable)summary.push(`${unreachable} UNREACHABLE`);if(failed)summary.push(`${failed} INCOMPLETE`);
   settingsMessage.textContent=summary.join(' · ')||`${items.length} TESTED`;
 }
 function downloadSourceExport(){
@@ -544,6 +556,8 @@ function undoSourceDeletion(){
 }
 function renderSettingsSources() {
   const items=loadCustomSources();settingsList.replaceChildren();syncSourceSelection();
+  const context=playbackContext(),byHost=new Map();
+  for(const record of loadPlaybackHistory()){if(record.context!==context)continue;const group=byHost.get(record.host)||[];group.push(record);byHost.set(record.host,group);}
   if(!items.length){const empty=document.createElement('div');empty.className='custom-source-empty';empty.textContent='NO CUSTOM SOURCES ADDED';settingsList.append(empty);return;}
   for(const item of items){
     const row=document.createElement('div');row.className=`custom-source-row${item.enabled?'':' is-off'}`;
@@ -551,7 +565,10 @@ function renderSettingsSources() {
     row.classList.toggle('is-selected',select.checked);select.addEventListener('change',()=>{select.checked?selectedSources.add(item.url):selectedSources.delete(item.url);syncSourceSelection();});
     const copy=document.createElement('div');copy.className='custom-source-copy';
     const domain=document.createElement('a');domain.className='custom-source-domain';domain.textContent=customSourceDomain(item.url);domain.href=item.url;domain.target='_blank';domain.rel='noopener noreferrer';
-    const status=document.createElement('div');status.className='custom-source-status';status.textContent=`${item.enabled?'ENABLED':'DISABLED'}${item.test?.status?` · ${item.test.status}`:''}`;copy.append(domain,status);renderSourceProfile(copy,item);
+    const status=document.createElement('div');status.className='custom-source-status';status.textContent=`${item.enabled?'ENABLED':'DISABLED'} · ${inspectionLabel(item)}`;copy.append(domain,status);
+    const playback=document.createElement('div');playback.className='custom-source-status';const outcomes=byHost.get(hostOf(item.url))||[];
+    const succeeded=outcomes.some(row=>row.lastSuccessAt),failed=outcomes.some(row=>row.lastFailureAt>row.lastSuccessAt);
+    playback.textContent=!outcomes.length?'DIRECT PLAYBACK · NOT TESTED':succeeded?(failed?'DIRECT PLAYBACK · PLAYED BEFORE · SOME FEEDS FAILED':'DIRECT PLAYBACK · PLAYED ON THIS BROWSER'):'DIRECT PLAYBACK · FAILED BEFORE · LOWER PRIORITY';copy.append(playback);renderSourceProfile(copy,item);
     const actions=document.createElement('div');actions.className='custom-source-actions';
     const toggle=document.createElement('button');toggle.type='button';toggle.className='text-action';toggle.textContent=item.enabled?'ON':'OFF';toggle.addEventListener('click',()=>{setCustomSourceEnabled(item.url,!item.enabled);renderSettingsSources();});
     const test=document.createElement('button');test.type='button';test.className='text-action';test.textContent='TEST';
@@ -559,11 +576,11 @@ function renderSettingsSources() {
       test.disabled=true;status.textContent='SCANNING';
       try{
         const data=await testCustomSourceProfile(item);const count=Object.values(data.categories||{}).flat().length+(data.eventLists||[]).length;
-        if(data.status==='UNREACHABLE')settingsMessage.textContent='UNREACHABLE · EXISTING PROFILE KEPT';
+        if(['UNREACHABLE','INCOMPLETE'].includes(data.status))settingsMessage.textContent='CHECK INCOMPLETE · SAVED ROUTES KEPT';
         else if(count)settingsMessage.textContent=`${count} DISCOVERY LINK${count===1?'':'S'} SAVED`;
         else settingsMessage.textContent='REACHABLE · CATEGORY SUPPORT UNKNOWN';
         renderSettingsSources();
-      }catch{mergeCustomSourceProfile(item.url,{test:{status:'FAILED',reason:'TEST REQUEST FAILED',testedAt:Date.now()}});settingsMessage.textContent='TEST FAILED';renderSettingsSources();}finally{test.disabled=false;}
+      }catch(error){mergeCustomSourceProfile(item.url,{test:inspectionFailure(error)});settingsMessage.textContent='CHECK INCOMPLETE · SAVED ROUTES KEPT';renderSettingsSources();}finally{test.disabled=false;}
     });
     const edit=document.createElement('button');edit.type='button';edit.className='text-action';edit.textContent='EDIT';edit.addEventListener('click',()=>profileEditor(row,item));
     const remove=document.createElement('button');remove.type='button';remove.className='text-action';remove.textContent='REMOVE';remove.addEventListener('click',()=>{removeCustomSource(item.url);renderSettingsSources();});
@@ -592,11 +609,11 @@ function setBusy(value) {
   busy = value;
   refreshButton.disabled = value || !sourceUrl;
   refreshButton.textContent = value ? 'LOADING' : 'REFRESH';
-  playButton.disabled = value || !candidate;
+  playButton.disabled = value || (!candidate&&!sourceUrl);
   syncControls();
 }
 function destroyLocal() {
-  generation++;
+  generation++;playbackAttempt=null;pendingMediaError=null;
   hls?.destroy();
   hls = null;
   video.pause();
@@ -697,7 +714,7 @@ function waitForMedia(signal) {
       error ? reject(error) : resolve();
     };
     const ready = () => finish();
-    const failed = () => finish(new Error('VIDEO COULD NOT LOAD'));
+    const failed = () => finish(pendingMediaError||new Error(video.error?.code===3?'DECODE_ERROR':'VIDEO COULD NOT LOAD'));
     const cancelled = () => finish(new DOMException('Cancelled', 'AbortError'));
     if (signal.aborted) return cancelled();
     video.addEventListener('canplay', ready);
@@ -706,10 +723,10 @@ function waitForMedia(signal) {
     timer = setTimeout(() => finish(new Error('STREAM TIMED OUT')), 14000);
   });
 }
-async function attachLocal(item, signal) {
+async function attachLocal(item,signal,engine='preferred'){
   destroyLocal();
   const thisGeneration = generation;
-  candidate = item;
+  candidate=item;pendingMediaError=null;startPlaybackFeedback(item);
   localLive=item.live===true;
   segmentDuration=item.segmentDuration||6;
   stage.classList.remove('is-casting');
@@ -718,7 +735,9 @@ async function attachLocal(item, signal) {
   // Attach rejection handling immediately, even if setup throws synchronously.
   ready.catch(() => {});
   video.classList.add('is-visible');
-  if (item.isHls && !video.canPlayType('application/vnd.apple.mpegurl')) {
+  const safari=/iPhone|iPad|iPod/.test(navigator.userAgent)||/Safari/.test(navigator.userAgent)&&!/Chrome|Chromium|Edg\/|CriOS|FxiOS/.test(navigator.userAgent);
+  const useHls=item.isHls&&window.Hls?.isSupported()&&(engine==='hls'||!safari||!video.canPlayType('application/vnd.apple.mpegurl'));
+  if(useHls){
     if (!window.Hls?.isSupported()) throw new Error('HLS IS NOT SUPPORTED IN THIS BROWSER');
     hls = new Hls({enableWorker: true, lowLatencyMode: true, liveSyncDurationCount: 3});
     hls.on(Hls.Events.LEVEL_UPDATED, (_event, data) => {
@@ -729,12 +748,13 @@ async function attachLocal(item, signal) {
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (generation !== thisGeneration || !data.fatal) return;
+      pendingMediaError=new Error(data.response?.code?`HTTP_${data.response.code}`:data.type==='mediaError'?'DECODE_ERROR':'NETWORK_ERROR');
       buffering = true;
       say('STREAM INTERRUPTED — PRESS REFRESH');
       syncControls();
       // Trigger readiness failure so refresh can re-extract the source.
       video.dispatchEvent(new Event('error'));
-      if(!busy) recoverStream();
+      if(!busy)playbackInterrupted(pendingMediaError);
     });
     hls.loadSource(item.mediaUrl);
     hls.attachMedia(video);
@@ -749,7 +769,7 @@ async function attachLocal(item, signal) {
       }).catch(() => {});
     }
   }
-  await ready;
+  try{await ready;}catch(error){if(!signal.aborted&&item.isHls&&!useHls&&engine==='preferred'&&window.Hls?.isSupported())return attachLocal(item,signal,'hls');throw error;}
   if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
   segmentDuration=item.segmentDuration||segmentDuration;
   playerEmpty.classList.add('is-hidden');
@@ -791,7 +811,7 @@ async function runOperation(task) {
   }
 }
 async function openStream(push=true,restoreEvent=null) {
-  search.stop(); currentEvent=restoreEvent;alternatives=[];failedSources=new Set();recoveryAttempts=0;recoveryCycles=0;userPaused=false;
+  search.stop(); currentEvent=restoreEvent;alternatives=[];failedSources=new Set();userPaused=false;
   let url;
   try {
     const raw = streamInput.value.trim();
@@ -811,7 +831,7 @@ async function openStream(push=true,restoreEvent=null) {
 async function refreshStream() {
   if (busy || !sourceUrl) return;
   const toTV = castConnected();
-  userPaused=false;recoveryAttempts=0;recoveryCycles=0;failedSources.clear();
+  userPaused=false;failedSources.clear();
   await runOperation(async signal => {
     if (candidate) {
       try {
@@ -846,6 +866,7 @@ async function loadOnTV(item, signal) {
   const session = castSession();
   if (!session) throw new Error('NO CAST DEVICE CONNECTED');
   const loadVersion=++castLoadVersion;desiredCastItem=item;
+  startPlaybackFeedback(item,'cast');
   castLoading = true;
   updateTVButton();
   try {
@@ -868,12 +889,12 @@ async function loadOnTV(item, signal) {
     if(loadVersion!==castLoadVersion||signal?.aborted)throw new DOMException('Cancelled','AbortError');
     castOwned=true;remoteProgress=Date.now();remotePosition=-1;userPaused=false;
     // Only stop the local download after the receiver accepts the media.
-    destroyLocal();
+    destroyLocal();startPlaybackFeedback(item,'cast');
     placeholder('PLAYING ON TV');
     say();
   } catch (error) {
     if(error.name==='AbortError')throw error;
-    console.warn('Cast load failed',error.code);throw error.message==='CAST_TIMED_OUT'?error:new Error('CAST_UNAVAILABLE');
+    recordPlaybackFailure(error);console.warn('Cast load failed',error.code);throw error.message==='CAST_TIMED_OUT'?error:new Error('CAST_UNAVAILABLE');
   } finally {if(loadVersion===castLoadVersion){castLoading=false;syncControls();}}
 }
 function adoptCastMedia() {
@@ -922,7 +943,9 @@ window.__onGCastApiAvailable = available => {
 };
 
 tvButton.addEventListener('click', async () => {
-  if (!candidate || busy) return;
+  if(busy)return;
+  if(!candidate&&sourceUrl){await runOperation(signal=>resolveAndPlay(signal));return;}
+  if(!candidate)return;
   if (tvMode === 'airplay') {
     video.webkitShowPlaybackTargetPicker();
     return;
@@ -984,7 +1007,9 @@ $('#back-button').addEventListener('click', () => {
 });
 playButton.addEventListener('click', async () => {
   if (casting()) { userPaused=!remotePlayer.isPaused;remoteController.playOrPause(); return; }
-  if (!candidate || busy) return;
+  if(busy)return;
+  if(!candidate&&sourceUrl){await runOperation(signal=>resolveAndPlay(signal));return;}
+  if(!candidate)return;
   if (!video.paused) {userPaused=true;video.pause();}
   else {
     try { userPaused=false;await video.play(); say(); }
@@ -1029,35 +1054,24 @@ video.addEventListener('waiting', () => { buffering = true; syncControls(); });
 video.addEventListener('ended', () => { buffering = true; syncControls(); });
 video.addEventListener('error', () => {
   buffering = true;
-  if (!busy && candidate && !casting()) recoverStream();
+  if(!busy&&candidate&&!casting())playbackInterrupted(pendingMediaError||new Error(video.error?.code===3?'DECODE_ERROR':'PLAYBACK_FAILED'));
   syncControls();
 });
 video.addEventListener('timeupdate', () => {
   if (video.currentTime !== lastTime) { lastTime = video.currentTime; lastProgress = Date.now(); }
-  syncControls();
+  syncControls();samplePlayback();
 });
-video.addEventListener('pause', () => {if(!busy && !recovering && !castLoading && !casting() && !video.ended && !video.error)userPaused=true;});
+video.addEventListener('pause', () => {if(!busy && !castLoading && !casting() && !video.ended && !video.error)userPaused=true;});
 setInterval(() => {
   if (!playerView.classList.contains('is-active')) return;
   syncControls();
-  if(!userPaused && !busy && !recovering && !casting() && !document.hidden && !video.webkitCurrentPlaybackTargetIsWireless && lastProgress && Date.now()-lastProgress>18000)recoverStream();
-  if(!busy && !recovering && lastProgress && Date.now()-lastRecovery>60000 && !buffering){recoveryAttempts=0;recoveryCycles=0;}
-  if(castOwned && castSession() && !busy && !castLoading && !recovering){
+  if(!userPaused&&!busy&&!casting()&&!document.hidden&&!video.webkitCurrentPlaybackTargetIsWireless&&lastProgress&&Date.now()-lastProgress>18000)playbackInterrupted(new Error('TIMEOUT'));
+  if(castOwned && castSession() && !busy && !castLoading){
     if(remotePlayer?.isMediaLoaded && remotePlayer.isPaused)userPaused=true;
     if(remotePlayer?.playerState==='PLAYING'){userPaused=false;if(remotePosition!==remotePlayer.currentTime){remotePosition=remotePlayer.currentTime;remoteProgress=Date.now();}}
-    if(!userPaused && remoteProgress && Date.now()-remoteProgress>18000)recoverStream();
+    if(!userPaused&&remoteProgress&&Date.now()-remoteProgress>18000)playbackInterrupted(new Error('TIMEOUT'));
   }
-  // Native Safari doesn't expose HLS playlist state. Read the same small playlist
-  // periodically to distinguish live from VOD/ended streams without re-extracting.
-  if (candidate?.isHls && !hls && !document.hidden && !casting() && !busy && !nativeProbePending && Date.now() - nativeProbeAt > 15000) {
-    nativeProbeAt = Date.now(); nativeProbePending = true;
-    const thisGeneration = generation;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    probeManifest(candidate, controller.signal).then(info => {
-      if (info && thisGeneration === generation) { localLive = info.live; segmentDuration = info.duration; }
-    }).catch(() => {}).finally(() => { clearTimeout(timer); nativeProbePending = false; });
-  }
+  samplePlayback();
 }, 1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){lastProgress=Date.now();syncControls();}});
 document.addEventListener('fullscreenchange',syncControls);
@@ -1075,7 +1089,7 @@ if(window.__castReady || window.cast?.framework) window.__onGCastApiAvailable(tr
 
 function leavePlayer() {
   closeSourceMenu();
-  operation?.abort();operation=null;userPaused=true;recovering=false;
+  operation?.abort();operation=null;userPaused=true;
   castLoadVersion++;desiredCastItem=null;castLoading=false;
   destroyLocal();candidate=null;currentEvent=null;alternatives=[];sourceUrl='';setBusy(false);say();
 }
@@ -1112,7 +1126,7 @@ async function restoreRoute() {
       if(!restoreEvent&&q){try{const response=await fetch(`/api/events?q=${encodeURIComponent(q)}`);if(response.ok)restoreEvent=(await response.json()).events?.find(item=>item.id===params.get('event'))||null;}catch{}}
     }
     if(token!==routeGeneration)return;
-    await openStream(false,restoreEvent);
+    sourceUrl=url;currentEvent=restoreEvent;showView('player');placeholder('PRESS PLAY OR REFRESH TO LOAD STREAM');setBusy(false);
     if(token!==routeGeneration)return;
     if(!restoreEvent&&q && params.get('event')) {
       try {
