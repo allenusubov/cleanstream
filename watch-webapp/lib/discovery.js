@@ -318,10 +318,10 @@ export function siteSupportsEvent(site,event) {
   const eventKeys=[event?.league,event?.sport].map(value=>String(value||'').toUpperCase()).filter(Boolean);
   return leagues.includes('*')||eventKeys.some(key=>leagues.includes(key));
 }
-async function fastCandidates(target,origin,onCandidate=()=>{}) {
-  const result=await resolve(target.url,origin,{progress:false});aborted();
+async function fastCandidates(target,origin,onCandidate=()=>{},onOptions=()=>{}) {
+  const publish=item=>onCandidate({...item,sourceUrl:target.parentUrl||target.url,provisional:true,castEligible:false});
+  const result=await resolve(target.url,origin,{progress:false,onCandidate:publish,onProgress:progress=>{if(progress.totalRoutes>1)onOptions(progress.totalRoutes-1);}});aborted();
   const candidates=result.candidates.slice(0,8).map(item=>({...item,sourceUrl:target.parentUrl||target.url,provisional:true,castEligible:false}));
-  candidates.forEach((item,index)=>onCandidate(item,index));
   return candidates;
 }
 export function sourceSupportState(site,event){
@@ -412,10 +412,14 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
           try{
             if(recheck)clearResolved(target.url,origin);
             const publish=(media,index=0)=>{
+              remove(pending.id);
               const id=idFor(`${pending.id}|${media.mediaUrl}`);
               upsert({...pending,...media,id,pending:false,unavailable:Boolean(media.unavailable),score:50+providerPriority(site,event,playbackHistory),deepVerified:false});
             };
-            const candidates=(await fastCandidates(target,origin,publish)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
+            const publishOptions=count=>{
+              if(!job.sources.some(source=>source.mediaUrl&&source.siteId===site.id))upsert({...pending,pending:false,hasStreamOptions:true,routeCount:count,expiresAt:Date.now()+300000,score:40+providerPriority(site,event,playbackHistory)});
+            };
+            const candidates=(await fastCandidates(target,origin,publish,publishOptions)).sort((a,b)=>(a.startupMs||0)-(b.startupMs||0));
             if(!candidates.length)throw new AppError('SOURCE_NOT_LIVE',422);
             const durablePage=target.parentUrl||target.url;if(durablePage)eventPageHistory.set(`${site.id}|${event.id}`,{url:durablePage,time:Date.now(),categoryUrl:target.categoryUrl||''});
             for(const [index,media] of candidates.entries()){
@@ -464,7 +468,7 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
       },{signal:controller.signal});
       job.continuation=sites.some(site=>!job.completedSiteIds.has(site.id));
       job.partial=job.continuation||timedOut>0;
-      const ready=job.sources.filter(source=>source.mediaUrl&&!source.unavailable).length;
+      const ready=job.sources.filter(source=>(source.mediaUrl||source.hasStreamOptions)&&!source.unavailable).length;
       job.status=ready?'READY':job.partial?'SEARCH_LIMIT_REACHED':unavailable===sites.length&&sites.length?'SOURCES_UNAVAILABLE':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
     })).catch(error=>{job.partial=true;job.status=job.sources.length?'READY':error.code||'SEARCH_LIMIT_REACHED';}).finally(()=>{
       clearTimeout(timer);

@@ -2,6 +2,7 @@ import {PlaybackEvidence,recordPlayback,playbackContext,loadPlaybackHistory,host
 import {inspectionLabel,inspectionFailure,routeCount} from './source-status.js';
 import {eventMetadata,updatePlaybackMetadata} from './playback-metadata.js';
 import {boundedCastLoad} from './cast-operation.js';
+import {playResolvedCandidates} from './resolution-session.js';
 import {initSearch} from './search.js';
 import {livePosition} from './live-position.js';
 import {loadCustomSources,recordCustomSourceSuccess,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,cleanupCustomSourceProfiles,removeCustomSource,removeCustomSources,saveCustomSources,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
@@ -82,8 +83,12 @@ let currentSettingsSection='menu';
 const friendly = {
   SOURCE_LIST_TOO_LARGE:'SOURCE LIST TOO LARGE — EXPORT AND REDUCE IT',
   INVALID_URL:'ENTER A VALID PUBLIC LINK', ENTER_EVENT:'ENTER AN EVENT',
-  SOURCE_UNAVAILABLE:"STREAM UNAVAILABLE — THIS SOURCE ISN'T WORKING RIGHT NOW",
-  NO_MEDIA:"NO PLAYABLE VIDEO FOUND",
+  SOURCE_UNAVAILABLE:'CLEAN STREAM COULD NOT LOAD THIS LINK — TRY REFRESH',
+  RESOLVER_UNAVAILABLE:'CLEAN STREAM SERVER COULD NOT PROCESS THIS LINK — TRY REFRESH',
+  EXTRACTION_FAILED:'CLEAN STREAM COULD NOT EXTRACT VIDEO FROM THIS PAGE',
+  SOURCE_NETWORK_ERROR:'CLEAN STREAM COULD NOT REACH A PLAYER ON THIS PAGE',
+  NO_MEDIA:'NO DIRECT VIDEO FOUND IN THE CHECKED STREAM OPTIONS',
+  NO_DEVICE_PLAYBACK:'CHECKED STREAM OPTIONS COULD NOT PLAY ON THIS DEVICE',
   DIRECT_BLOCKED:"PLAYBACK BLOCKED — THIS SOURCE CAN'T PLAY DIRECTLY ON YOUR DEVICE",
   SOURCE_FROZEN:'STREAM UNAVAILABLE — THIS SOURCE HAS STOPPED UPDATING',
   DIRECT_ONLY:'THIS STREAM NEEDS TO BE OPENED AGAIN', NOT_STARTED:'THIS EVENT HAS NOT STARTED',
@@ -101,11 +106,13 @@ const search = initSearch(async (item, items, event) => {
   showView('player');userPaused=false;
   const toTV=castConnected();
   await runOperation(async signal => {
-    let choices=[item,...items.filter(x=>x.id!==item.id)];
+    if(!item.mediaUrl){await resolveAndPlay(signal,toTV);return;}
+    let choices=[item,...items.filter(x=>x.mediaUrl&&x.id!==item.id)];
     for(const choice of choices) {
       try {await playItem(choice,signal,toTV);return;}catch(error){if(signal.aborted)throw error;failedSources.add(choice.id);}
     }
-    throw new Error('DIRECT_BLOCKED');
+    sourceUrl=item.sourceUrl;
+    await resolveAndPlay(signal,toTV,true);
   });
 },q=>{
   leavePlayer();showView('home');navigate({view:'search',q});
@@ -122,7 +129,7 @@ function playerSources(){
   const all=[candidate,...alternatives,...(currentEvent?search.getSources(currentEvent.id):[])].filter(Boolean);
   const map=new Map();
   for(const item of all){
-    if(!item.mediaUrl)continue;
+    if(!item.mediaUrl&&!item.hasStreamOptions)continue;
     const key=sourceKey(item);if(key&&!map.has(key))map.set(key,item);
   }
   return [...map.values()];
@@ -138,7 +145,7 @@ function renderSourceMenu(){
     if(playing){const state=document.createElement('span');state.className='source-menu-state';state.textContent='PLAYING';row.append(state);}
     row.addEventListener('click',async()=>{
       closeSourceMenu();if(playing||busy)return;userPaused=false;
-      await runOperation(async signal=>{await playItem(item,signal,Boolean(casting()));});
+      await runOperation(async signal=>{if(item.mediaUrl)await playItem(item,signal,Boolean(casting()));else{sourceUrl=item.sourceUrl;await resolveAndPlay(signal,Boolean(casting()));}});
     });
     sourceMenu.append(row);
   }
@@ -312,7 +319,7 @@ exploreButton.addEventListener('click',async()=>{
   if(!liveWindowEvents.length||Date.now()-liveWindowUpdated>60000)await loadLiveWindow(true);
   leavePlayer();showView('home');navigate({view:'explore'});search.explore(liveWindowEvents);
 });
-async function playItem(item,signal,toTV=false) {
+async function playItem(item,signal,toTV=false,{refreshOnFailure=true}={}) {
   sourceUrl=item.sourceUrl||sourceUrl;
   if(item.expiresAt && item.expiresAt<Date.now()) {
     const data=await apiResolve(signal,true);
@@ -324,7 +331,7 @@ async function playItem(item,signal,toTV=false) {
   }catch(error){
     if(signal?.aborted)throw error;
     // A signed URL may have expired. One fresh extraction belongs to this click.
-    if(!toTV&&['TIMEOUT','TOKEN_EXPIRED','ACCESS_DENIED'].includes(failureReason(error))){
+    if(refreshOnFailure&&!toTV&&['TIMEOUT','TOKEN_EXPIRED','ACCESS_DENIED'].includes(failureReason(error))){
       try{const fresh=(await apiResolve(signal,true))[0];if(fresh?.mediaUrl&&fresh.mediaUrl!==item.mediaUrl){item={...item,...fresh};await attachLocal(item,signal);return;}}catch(next){if(signal?.aborted)throw next;error=next;}
     }
     recordPlaybackFailure(error);throw error;
@@ -681,8 +688,8 @@ async function apiResolve(signal, refresh = false) {
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); }
-  catch { throw new Error('SOURCE_UNAVAILABLE'); }
-  if (!response.ok) throw new Error(data.code || 'SOURCE_UNAVAILABLE');
+  catch { throw new Error('RESOLVER_UNAVAILABLE'); }
+  if (!response.ok) throw new Error(data.code || 'RESOLVER_UNAVAILABLE');
   if (!data.candidates?.length) throw new Error('NO PLAYABLE MEDIA FOUND');
   return data.candidates;
 }
@@ -774,23 +781,36 @@ async function attachLocal(item,signal,engine='preferred'){
   segmentDuration=item.segmentDuration||segmentDuration;
   playerEmpty.classList.add('is-hidden');
   try { await video.play(); say(); }
-  catch { say('READY — PRESS PLAY'); }
+  catch(error) {if(error.name!=='NotAllowedError')throw error;say('READY — PRESS PLAY');}
   syncControls();
 }
 async function resolveAndPlay(signal, toTV = false, refresh = false) {
-  const items = await apiResolve(signal, refresh);
-  if(!currentEvent) alternatives=items;
-  let lastError;
-  for (const item of items) {
-    try {
-      await playItem(item,signal,toTV && Boolean(castSession()));
-      return;
-    } catch (error) {
-      if (signal.aborted) throw error;
-      lastError = error;
+  const root=sourceUrl;
+  await playResolvedCandidates({signal,
+    open:networkSignal=>fetch('/api/resolve',{method:'POST',headers:{'content-type':'application/json'},signal:networkSignal,
+      body:JSON.stringify({url:root,refresh,stream:true,playbackHistory:loadPlaybackHistory().filter(value=>value.context===playbackContext(navigator.userAgent,toTV?'cast':'local'))})}),
+    onCandidate:item=>{if(!alternatives.some(value=>value.mediaUrl===item.mediaUrl))alternatives.push(item);if(!sourceMenu.hidden)renderSourceMenu();},
+    onProgress:progress=>{if(!candidate)say(`CHECKING STREAM OPTIONS · ${progress.checkedRoutes}/${progress.totalRoutes}`);},
+    play:async item=>{
+      await playItem(item,signal,toTV&&Boolean(castSession()),{refreshOnFailure:false});
+      if(toTV||video.paused)return;
+      try{await waitForPlaybackProgress(signal);}catch(error){recordPlaybackFailure(error);throw error;}
     }
-  }
-  throw lastError || new Error('NO PLAYABLE MEDIA FOUND');
+  });
+}
+function waitForPlaybackProgress(signal){
+  return new Promise((resolve,reject)=>{
+    const proof=new PlaybackEvidence(()=>finish()),deadline=Date.now()+10000;let timer;
+    const finish=error=>{clearInterval(timer);signal.removeEventListener('abort',cancel);error?reject(error):resolve();};
+    const cancel=()=>finish(signal.reason||new DOMException('Cancelled','AbortError'));
+    const sample=()=>{
+      if(signal.aborted)return cancel();
+      if(pendingMediaError||video.error)return finish(pendingMediaError||new Error('PLAYBACK_FAILED'));
+      if(Date.now()>deadline)return finish(new Error('STREAM TIMED OUT'));
+      proof.sample(video.currentTime,!video.paused&&!video.ended&&video.readyState>=3&&video.videoWidth>0&&!buffering);
+    };
+    signal.addEventListener('abort',cancel,{once:true});timer=setInterval(sample,250);sample();
+  });
 }
 async function runOperation(task) {
   operation?.abort();

@@ -11,7 +11,8 @@ const labels={
 };
 const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined&&text!==null)node.textContent=text;return node;};
 const countLabel=count=>`${count} SOURCE${count===1?'':'S'} FOUND`;
-const playableSource=source=>Boolean(source && source.mediaUrl && !source.unavailable && (!source.expiresAt||source.expiresAt>Date.now()+3000));
+const playableSource=source=>Boolean(source && (source.mediaUrl||source.hasStreamOptions&&source.sourceUrl) && !source.unavailable && (!source.expiresAt||source.expiresAt>Date.now()+3000));
+const sourceKey=source=>source.mediaUrl||source.id||source.sourceUrl;
 const SOURCE_CACHE_PREFIX='cleanstream.eventSources.v3.';
 function readSourceCache(eventId){try{const value=JSON.parse(sessionStorage.getItem(`${SOURCE_CACHE_PREFIX}${eventId}`)||'null');if(value&&Date.now()-value.time<10*60*1000){value.sources=(value.sources||[]).filter(playableSource);return value;}}catch{}return null;}
 function writeSourceCache(eventId,sources,meta={}){try{sessionStorage.setItem(`${SOURCE_CACHE_PREFIX}${eventId}`,JSON.stringify({time:Date.now(),sources:sources.filter(playableSource),...meta}));}catch{}}
@@ -48,28 +49,28 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
       const left=element('span','source-copy');left.append(element('span','source-name',source.displayName||source.name||`SOURCE ${String(i+1).padStart(2,'0')}`));
       if(source.quality)left.append(element('span','source-detail',`${source.quality}P`));
       else if(source.mirrorLabel && source.mirrorLabel!=='DEFAULT')left.append(element('span','source-detail',source.mirrorLabel));
-      button.append(left);button.append(element('span','source-rank',playbackLabel(source,item,contextForChecks())));
+      button.append(left);button.append(element('span','source-rank',source.mediaUrl?playbackLabel(source,item,contextForChecks()):'STREAM OPTIONS FOUND'));
       if(source.mirrorLabel&&source.mirrorLabel!=='DEFAULT'&&source.quality)left.append(element('span','source-detail',source.mirrorLabel));
       button.addEventListener('click',()=>onWatch(source,latest.get(item.id)||[],item));list.append(button);
     }
     const state=discoveryState.get(item.id);
-    if(state?.running)return;
-    const tools=element('div','source-check-tools');
-    const add=(text,options)=>{const button=element('button','text-action source-more',text);button.type='button';button.addEventListener('click',()=>sources(item,row,generation,options));tools.append(button);};
-    if(state?.hasMore)add('CHECK MORE',{mode:state.mode,resume:true});
-    if(readySources.length)add('CHECK MIRRORS',{mode:'deep'});
-    if(state?.done||readySources.length)add('RECHECK',{mode:'light',recheck:true});
     if(!state&&!readySources.length)list.append(element('p','results-subtext','CLICK CHECK SOURCES TO FIND STREAMS'));
-    if(tools.children.length)list.append(tools);
   }
 
   function updateAction(item,row,{done=false,status='CHECKING'}={}){
     const state=row.querySelector('.event-state'),action=row.querySelector('.event-action');
-    const sources=(latest.get(item.id)||[]).filter(playableSource),playable=bestPlayable(item.id);
-    if(state){if(sources.length)state.textContent=countLabel(sources.length);else if(done)state.textContent=discoveryMessage({status,partial:discoveryState.get(item.id)?.partial,hasMore:discoveryState.get(item.id)?.hasMore});else state.textContent='';}
+    const readySources=(latest.get(item.id)||[]).filter(playableSource),playable=bestPlayable(item.id);
+    if(state){if(readySources.length)state.textContent=countLabel(readySources.length);else if(done)state.textContent=discoveryMessage({status,partial:discoveryState.get(item.id)?.partial,hasMore:discoveryState.get(item.id)?.hasMore});else state.textContent='';}
     if(action){if(playable){action.textContent='WATCH';action.disabled=false;action.dataset.mode='watch';}
       else if(discoveryState.get(item.id)?.running){action.textContent='CHECKING SOURCES';action.disabled=true;action.dataset.mode='checking';}
       else {action.textContent=discoveryState.get(item.id)?.hasMore?'CHECK MORE':discoveryState.get(item.id)?.done?'RECHECK':'CHECK SOURCES';action.disabled=false;action.dataset.mode='check';}}
+    const menu=row.querySelector('.event-options'),options=row.querySelector('.event-options-list'),check=discoveryState.get(item.id);
+    if(menu){
+      menu.hidden=!playable||Boolean(check?.running);options.replaceChildren();
+      const add=(label,settings)=>{const button=element('button','text-action',label);button.type='button';button.addEventListener('click',()=>{menu.open=false;sources(item,row,generation,settings);});options.append(button);};
+      if(check?.hasMore)add('CHECK MORE',{mode:check.mode,resume:true});
+      add('CHECK MIRRORS',{mode:'deep'});add('RECHECK',{mode:'light',recheck:true});
+    }
   }
   async function consumeStream(response,item,onUpdate=()=>{},append=false){
     if(!response.ok){let error;try{error=await response.json();}catch{}throw new Error(error?.code==='SOURCE_LIST_TOO_LARGE'?'SOURCE_LIST_TOO_LARGE':'SOURCES_UNAVAILABLE');}
@@ -78,7 +79,7 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
       const read=await reader.read();if(read.done)break;buffer+=decoder.decode(read.value,{stream:true});let end;
       while((end=buffer.indexOf('\n'))>=0){
         const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;let data;try{data=JSON.parse(line);}catch{continue;}if(data.type!=='update')continue;
-        const merged=new Map(previous.filter(playableSource).map(source=>[source.mediaUrl,source]));for(const source of data.sources||[]){if(playableSource(source))merged.set(source.mediaUrl,source);else merged.delete(source.mediaUrl);}found=[...merged.values()];finalStatus=data.status||finalStatus;doneState=Boolean(data.done);
+        const merged=new Map(previous.filter(playableSource).map(source=>[sourceKey(source),source]));for(const source of data.sources||[]){if(playableSource(source))merged.set(sourceKey(source),source);else merged.delete(sourceKey(source));}found=[...merged.values()];finalStatus=data.status||finalStatus;doneState=Boolean(data.done);
         latest.set(item.id,found);writeSourceCache(item.id,found,{done:doneState,status:finalStatus,partial:Boolean(data.partial),hasMore:Boolean(data.hasMore),checkedProviderIds:data.checkedProviderIds||[],mode:discoveryState.get(item.id)?.mode||'light'});
         window.dispatchEvent(new CustomEvent('cleanstream:sources-updated',{detail:{eventId:item.id,sources:found}}));onUpdate(found,data);
       }
@@ -118,7 +119,8 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
     const heading=element('div','event-heading'),info=element('div','event-info');
     const title=element('h3','event-title'),titleButton=element('button','event-title-button',item.title);titleButton.type='button';titleButton.setAttribute('aria-expanded',String(expanded));title.append(titleButton);info.append(title);appendWhen(info,item);
     const right=element('div','event-actions'),state=element('span','event-state');state.setAttribute('aria-live','polite');
-    const action=element('button','text-action event-action','CHECK SOURCES');action.type='button';right.append(state,action);
+    const action=element('button','text-action event-action','CHECK SOURCES');action.type='button';
+    const menu=element('details','event-options'),summary=element('summary','','•••');summary.setAttribute('aria-label',`More source options for ${item.title}`);menu.hidden=true;menu.append(summary,element('div','event-options-list'));right.append(state,action,menu);
     const list=element('div','source-list');list.hidden=!expanded;heading.append(info,right);article.append(heading,list);article.classList.toggle('is-expanded',expanded);
     const expandAndCheck=()=>{const open=!article.classList.contains('is-expanded');article.classList.toggle('is-expanded',open);titleButton.setAttribute('aria-expanded',String(open));list.hidden=!open;if(open)renderSources(item,article,latest.get(item.id)||[]);};
     titleButton.addEventListener('click',expandAndCheck);

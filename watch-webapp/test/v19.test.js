@@ -46,7 +46,7 @@ test('all providers beyond twelve can be scheduled with bounded concurrency',asy
   assert.equal(calls,25);assert.equal(cursor,25);assert.equal(peak,3);
 });
 
-test('partial checks never claim exhaustive absence',()=>{assert.match(discoveryMessage({partial:true}),/INCOMPLETE/);assert.match(discoveryMessage({hasMore:true}),/BATCH/);});
+test('partial checks never claim exhaustive absence',()=>{assert.match(discoveryMessage({partial:true}),/INCOMPLETE/);assert.match(discoveryMessage({hasMore:true}),/YET/);});
 
 test('event titles and transparent league artwork replace generic playback branding',()=>{
   const meta=eventMetadata({title:'KNICKS VS CELTICS',league:'NBA'},{},'https://app.example');

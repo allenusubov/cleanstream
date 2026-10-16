@@ -11,6 +11,8 @@ import {scanSourceProfile} from './lib/source-profile.js';
 import {requestErrorLog} from './lib/error-log.js';
 import {cleanPlaybackHistory} from './public/playback-history.js';
 import {excludedPlatform} from './public/live-only.js';
+import {extractionError} from './lib/event-streams.js';
+import {withSignal} from './lib/discovery-control.js';
 export const app=express();
 const root=path.dirname(fileURLToPath(import.meta.url));
 app.set('trust proxy',1);
@@ -55,7 +57,22 @@ app.post('/api/resolve',async(req,res)=>{
   const url=String(req.body?.url||'').trim();
   if(req.body?.refresh) clearResolved(url,origin(req));
   res.setHeader('Cache-Control','no-store');
-  res.json(await resolve(url,origin(req)));
+  const controller=new AbortController();
+  res.on('close',()=>controller.abort(new DOMException('Client disconnected','AbortError')));
+  if(!req.body?.stream){
+    try{return res.json(await withSignal(controller.signal,()=>resolve(url,origin(req))));}
+    catch(cause){throw extractionError(cause);}
+  }
+  res.setHeader('Content-Type','application/x-ndjson');res.setHeader('Cache-Control','no-store, no-transform');res.setHeader('X-Accel-Buffering','no');res.flushHeaders();
+  const write=value=>{if(!res.destroyed&&!res.writableEnded)res.write(JSON.stringify(value)+'\n');};
+  const heartbeat=setInterval(()=>write({type:'ping'}),10000);
+  try{
+    const result=await withSignal(controller.signal,()=>resolve(url,origin(req),{scanAll:true,signal:controller.signal,playbackHistory:cleanPlaybackHistory(req.body.playbackHistory),
+      onCandidate:candidate=>write({type:'candidate',candidate}),onProgress:progress=>write({type:'progress',...progress})}));
+    write({type:'done',partial:result.partial,checkedRoutes:result.checkedRoutes,totalRoutes:result.totalRoutes});
+  }catch(cause){
+    if(!controller.signal.aborted){const error=extractionError(cause);console.error(JSON.stringify(requestErrorLog(error,req)));write({type:'error',code:error.code});}
+  }finally{clearInterval(heartbeat);if(!res.destroyed)res.end();}
 });
 async function streamEventSources(req,res){
   const event=knownEvents.get(req.params.id);

@@ -16,7 +16,7 @@ export function compactSources(items,item={}){
   });
 }
 export function discoveryMessage(data){
-  if(data.hasMore)return 'NO SOURCES IN THIS BATCH — CHECK MORE';
-  if(data.partial)return data.sources?.length?'MORE SOURCES CAN BE CHECKED':'CHECK INCOMPLETE — TRY RECHECK';
+  if(data.hasMore)return 'NO SOURCES YET';
+  if(data.partial)return data.sources?.length?'MORE OPTIONS AVAILABLE':'CHECK INCOMPLETE';
   return {SOURCE_LIST_TOO_LARGE:'SOURCE LIST TOO LARGE — EXPORT AND REDUCE IT',SOURCES_UNAVAILABLE:'SOURCES UNAVAILABLE'}[data.status]||'NO SOURCES FOUND';
 }

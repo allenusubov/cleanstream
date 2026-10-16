@@ -1,8 +1,10 @@
-# Clean Stream v0.21.0
+# Clean Stream v0.22.0
 
 Live events and aggregator streams, played directly on the viewer or TV.
 
 - Source discovery starts only from explicit CHECK SOURCES, CHECK MORE, CHECK MIRRORS, RECHECK, WATCH, PLAY, or REFRESH actions. Browsing events and playback interruptions do not start discovery. Event/schedule metadata may still refresh.
+- Event pages expose their player frames and event-specific source rows to a bounded concurrent walker. Paste-link playback consumes candidates as they arrive, tries another candidate after startup failure, and cancels inspection after advancing playback. Browser errors are separate from device playback failures.
+- Event rows keep one main action; additional checks are in the compact options menu beside WATCH. Status labels wrap without overlapping.
 - Four-provider batches use actual browser/receiver playback history. Repeated playback failures lower priority temporarily, without excluding providers.
 - Saved current-event/category routes precede homepage exploration. Structured event data, contextual Watch links, signed URLs, and extensionless HLS playlists are supported.
 - Three seconds of advancing video records playback evidence. Finding or downloading media on the server does not prove device or Cast compatibility.
