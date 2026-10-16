@@ -1,5 +1,14 @@
 [
   {
+    "id": "sportycos",
+    "name": "SPORTYCOS",
+    "type": "gsc",
+    "leagues": ["*"],
+    "indexUrls": ["https://sportycos.com/us/us.html"],
+    "displayHost": "sportycos.com",
+    "enabled": true
+  },
+  {
     "id": "streamed",
     "name": "STREAMED",
     "type": "streamed",

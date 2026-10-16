@@ -3,6 +3,7 @@ import {inspectionLabel,inspectionFailure,routeCount} from './source-status.js';
 import {eventMetadata,updatePlaybackMetadata} from './playback-metadata.js';
 import {boundedCastLoad} from './cast-operation.js';
 import {playResolvedCandidates} from './resolution-session.js';
+import {playSourceChoices} from './playback-selection.js';
 import {initSearch} from './search.js';
 import {livePosition} from './live-position.js';
 import {loadCustomSources,recordCustomSourceSuccess,addCustomSources,setCustomSourceEnabled,setCustomSourceProfile,mergeCustomSourceProfile,cleanupCustomSourceProfiles,removeCustomSource,removeCustomSources,saveCustomSources,customSourceDomain,profileLines,parseProfileLines,exportCustomSourcesPayload,importCustomSourcesPayload,encodeCustomSourcesShare,decodeCustomSourcesShare,ensureDefaultCustomSources} from './custom-sources.js';
@@ -50,6 +51,7 @@ let selectedSources=new Set();
 let deletedSources=[];
 
 let hls = null;
+let providerFrame=null;
 let playbackAttempt=null,pendingMediaError=null;
 let candidate = null;
 let sourceUrl = '';
@@ -87,6 +89,12 @@ const friendly = {
   RESOLVER_UNAVAILABLE:'CLEAN STREAM SERVER COULD NOT PROCESS THIS LINK — TRY REFRESH',
   EXTRACTION_FAILED:'CLEAN STREAM COULD NOT EXTRACT VIDEO FROM THIS PAGE',
   SOURCE_NETWORK_ERROR:'CLEAN STREAM COULD NOT REACH A PLAYER ON THIS PAGE',
+  FEED_FORMAT_CHANGED:'THIS PROVIDER CHANGED ITS EVENT FEED — CHECK INCOMPLETE',
+  FEED_UNAVAILABLE:'THE PROVIDER’S EVENT FEED COULD NOT BE READ — TRY AGAIN',
+  EVENT_UNAVAILABLE:'THIS EVENT IS NOT AVAILABLE IN THE PROVIDER’S CURRENT FEED',
+  STREAMS_NOT_POSTED:'THE PROVIDER HAS NOT POSTED STREAMS FOR THIS EVENT YET',
+  PROVIDER_PLAYER_ONLY:'THIS OPTION USES THE PROVIDER’S PLAYER — CHOOSE A DIRECT VIDEO FOR CAST',
+  ORIGINAL_SITE_REQUIRED:'THIS PROVIDER REQUIRES ITS OWN SITE — OPEN A LINK IN SOURCES',
   NO_MEDIA:'NO DIRECT VIDEO FOUND IN THE CHECKED STREAM OPTIONS',
   NO_DEVICE_PLAYBACK:'CHECKED STREAM OPTIONS COULD NOT PLAY ON THIS DEVICE',
   DIRECT_BLOCKED:"PLAYBACK BLOCKED — THIS SOURCE CAN'T PLAY DIRECTLY ON YOUR DEVICE",
@@ -100,27 +108,31 @@ const friendly = {
   LIVE_AGGREGATORS_ONLY:'USE A LIVE EVENT LINK FROM AN AGGREGATOR'
 };
 const search = initSearch(async (item, items, event) => {
+  if(item.externalUrl){openOriginalSite(item);return;}
   search.stop();currentEvent=event; alternatives=items; failedSources=new Set();
   sourceUrl=item.sourceUrl;streamInput.value=sourceUrl;
   navigate({view:'player',url:sourceUrl,q:search.query,event:event.id});
   showView('player');userPaused=false;
   const toTV=castConnected();
   await runOperation(async signal => {
-    if(!item.mediaUrl){await resolveAndPlay(signal,toTV);return;}
-    let choices=[item,...items.filter(x=>x.mediaUrl&&x.id!==item.id)];
-    for(const choice of choices) {
-      try {await playItem(choice,signal,toTV);return;}catch(error){if(signal.aborted)throw error;failedSources.add(choice.id);}
-    }
-    sourceUrl=item.sourceUrl;
-    await resolveAndPlay(signal,toTV,true);
+    await playSourceChoices({items:[...items],selected:item,event,context:playbackContext(navigator.userAgent,toTV?'cast':'local'),history:loadPlaybackHistory(),signal,
+      tryMedia:async choice=>{await playItem(choice,signal,toTV,{refreshOnFailure:false});if(!toTV&&!video.paused){try{await waitForPlaybackProgress(signal);}catch(error){recordPlaybackFailure(error);throw error;}}},
+      tryPage:async choice=>{sourceUrl=choice.sourceUrl;await resolveAndPlay(signal,toTV,true);},
+      onFailure:choice=>failedSources.add(choice.id)
+    });
   });
 },q=>{
   leavePlayer();showView('home');navigate({view:'search',q});
 },()=>playbackContext(navigator.userAgent,castConnected()?'cast':video.webkitCurrentPlaybackTargetIsWireless?'airplay':'local'));
 
-function sourceKey(item){return item?.id||item?.mediaUrl||item?.sourceUrl||'';}
+function sourceKey(item){return item?.id||item?.mediaUrl||item?.embedUrl||item?.externalUrl||item?.sourceUrl||'';}
+function openOriginalSite(item){
+  const url=new URL(item.externalUrl);if(!['https:','http:'].includes(url.protocol))return;
+  if(busy){operation?.abort();operation=null;setBusy(false);}
+  window.open(url.href,'_blank','noopener,noreferrer');
+}
 function sourceLabel(item,index=0){
-  if(item?.displayName||item?.name)return String(item.displayName||item.name).toUpperCase();
+  if(item?.displayName||item?.name)return String(item.displayName||item.name).toUpperCase()+((item.embedUrl||item.externalUrl)&&item.mirrorLabel?' — '+item.mirrorLabel:'');
   const seed=item?.sourceUrl||item?.mediaUrl;
   try{return new URL(seed).hostname.replace(/^www\./i,'').toUpperCase();}catch{}
   return `SOURCE ${String(index+1).padStart(2,'0')}`;
@@ -129,7 +141,7 @@ function playerSources(){
   const all=[candidate,...alternatives,...(currentEvent?search.getSources(currentEvent.id):[])].filter(Boolean);
   const map=new Map();
   for(const item of all){
-    if(!item.mediaUrl&&!item.hasStreamOptions)continue;
+    if(!item.mediaUrl&&!item.embedUrl&&!item.externalUrl&&!item.hasStreamOptions)continue;
     const key=sourceKey(item);if(key&&!map.has(key))map.set(key,item);
   }
   return [...map.values()];
@@ -142,10 +154,11 @@ function renderSourceMenu(){
     const row=document.createElement('button');row.type='button';row.className='source-menu-row';row.setAttribute('role','menuitem');
     const label=document.createElement('span');label.className='source-menu-name';label.textContent=sourceLabel(item,index);row.append(label);
     const playing=sourceKey(item)===sourceKey(candidate);
-    if(playing){const state=document.createElement('span');state.className='source-menu-state';state.textContent='PLAYING';row.append(state);}
+    if(item.externalUrl){const note=document.createElement('span');note.className='source-menu-state';note.textContent='OPEN ORIGINAL SITE';row.append(note);}
+    if(playing){const state=document.createElement('span');state.className='source-menu-state';state.textContent=item.embedUrl?'SELECTED':'PLAYING';row.append(state);}
     row.addEventListener('click',async()=>{
-      closeSourceMenu();if(playing||busy)return;userPaused=false;
-      await runOperation(async signal=>{if(item.mediaUrl)await playItem(item,signal,Boolean(casting()));else{sourceUrl=item.sourceUrl;await resolveAndPlay(signal,Boolean(casting()));}});
+      closeSourceMenu();if(item.externalUrl){openOriginalSite(item);return;}if(playing||busy)return;userPaused=false;
+      await runOperation(async signal=>{if(item.mediaUrl||item.embedUrl)await playItem(item,signal,Boolean(casting()));else{sourceUrl=item.sourceUrl;await resolveAndPlay(signal,Boolean(casting()));}});
     });
     sourceMenu.append(row);
   }
@@ -321,6 +334,10 @@ exploreButton.addEventListener('click',async()=>{
 });
 async function playItem(item,signal,toTV=false,{refreshOnFailure=true}={}) {
   sourceUrl=item.sourceUrl||sourceUrl;
+  if(item.embedUrl){
+    if(toTV)throw new Error('PROVIDER_PLAYER_ONLY');
+    await attachProviderPlayer(item,signal);return;
+  }
   if(item.expiresAt && item.expiresAt<Date.now()) {
     const data=await apiResolve(signal,true);
     item={...item,...data[0]};
@@ -621,6 +638,7 @@ function setBusy(value) {
 }
 function destroyLocal() {
   generation++;playbackAttempt=null;pendingMediaError=null;
+  providerFrame?.remove();providerFrame=null;
   hls?.destroy();
   hls = null;
   video.pause();
@@ -636,6 +654,7 @@ function latestLocalPosition() {
   return livePosition({live:localLive||video.duration===Infinity,seekable:video.seekable,syncPosition:hls?.liveSyncPosition,segmentDuration});
 }
 function knownLive() {
+  if(providerFrame)return false;
   return localLive||candidate?.live===true||(candidate?.live!==false&&currentEvent?.status==='live')||video.duration===Infinity||Boolean(casting()&&remotePlayer?.liveSeekableRange&&!remotePlayer.liveSeekableRange.isLiveDone);
 }
 async function waitForLocalLiveTarget(timeout=2500) {
@@ -678,6 +697,21 @@ function syncControls() {
   if (onTV && !busy) placeholder('PLAYING ON TV');
   sourcesButton.disabled=!playerSources().length;
   updateTVButton();
+  if(providerFrame){playButton.disabled=true;muteButton.disabled=true;liveButton.disabled=true;tvButton.disabled=true;tvButton.title='Use the provider player’s controls';}
+  else muteButton.disabled=busy;
+}
+async function attachProviderPlayer(item,signal){
+  const target=new URL(item.embedUrl);if(!['https:','http:'].includes(target.protocol)||target.origin===location.origin)throw new Error('INVALID_URL');
+  destroyLocal();candidate=item;userPaused=false;placeholder('LOADING PROVIDER PLAYER');
+  const frame=document.createElement('iframe');frame.className='provider-player';frame.title=item.mirrorLabel||'Provider live player';
+  frame.setAttribute('sandbox','allow-scripts allow-same-origin allow-presentation');
+  frame.setAttribute('allow','autoplay; encrypted-media; picture-in-picture');frame.allowFullscreen=true;frame.referrerPolicy='no-referrer';
+  providerFrame=frame;
+  if(signal.aborted){providerFrame=null;throw signal.reason||new DOMException('Cancelled','AbortError');}
+  // A provider owns its loading/play button. Do not wait for every ad/image in
+  // a cross-origin frame, or treat its load event as playback confirmation.
+  frame.src=target.href;stage.append(frame);
+  playerEmpty.classList.add('is-hidden');say('PROVIDER PLAYER — USE ITS CONTROLS');syncControls();
 }
 
 async function apiResolve(signal, refresh = false) {
@@ -789,7 +823,7 @@ async function resolveAndPlay(signal, toTV = false, refresh = false) {
   await playResolvedCandidates({signal,
     open:networkSignal=>fetch('/api/resolve',{method:'POST',headers:{'content-type':'application/json'},signal:networkSignal,
       body:JSON.stringify({url:root,refresh,stream:true,playbackHistory:loadPlaybackHistory().filter(value=>value.context===playbackContext(navigator.userAgent,toTV?'cast':'local'))})}),
-    onCandidate:item=>{if(!alternatives.some(value=>value.mediaUrl===item.mediaUrl))alternatives.push(item);if(!sourceMenu.hidden)renderSourceMenu();},
+    onCandidate:item=>{const key=item.mediaUrl||item.embedUrl||item.externalUrl;if(!alternatives.some(value=>(value.mediaUrl||value.embedUrl||value.externalUrl)===key))alternatives.push(item);if(!sourceMenu.hidden)renderSourceMenu();},
     onProgress:progress=>{if(!candidate)say(`CHECKING STREAM OPTIONS · ${progress.checkedRoutes}/${progress.totalRoutes}`);},
     play:async item=>{
       await playItem(item,signal,toTV&&Boolean(castSession()),{refreshOnFailure:false});
@@ -822,7 +856,7 @@ async function runOperation(task) {
   catch (error) {
     if (!controller.signal.aborted) {
       userPaused=true;
-      placeholder('TRY REFRESH');
+      placeholder(error.message==='ORIGINAL_SITE_REQUIRED'?'PROVIDER SITE REQUIRED':'TRY REFRESH');
       console.warn('Playback failed', error.name, error.message);
       say(readable(error));
     }
@@ -1061,6 +1095,7 @@ liveButton.addEventListener('click', async () => {
 $('#fullscreen-button').addEventListener('click', async () => {
   if (casting()) { say('VIDEO IS PLAYING ON YOUR TV'); return; }
   try {
+    if(providerFrame){if(document.fullscreenElement)await document.exitFullscreen();else if(stage.requestFullscreen)await stage.requestFullscreen();else say('USE THE PROVIDER PLAYER’S FULLSCREEN BUTTON');return;}
     if (document.fullscreenElement) await document.exitFullscreen();
     else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
     else await stage.requestFullscreen?.();

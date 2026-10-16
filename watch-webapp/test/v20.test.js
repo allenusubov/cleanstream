@@ -121,7 +121,7 @@ test('HTTP search returns live events only and removed playback routes stay disa
     const {app}=await import('../server.js');server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
     const search=await request('/api/search?q=opening%20night');assert.equal(search.status,200);
     assert.equal(search.data.tv,undefined);assert.equal(search.data.movies,undefined);assert.ok(search.data.live.events.some(event=>event.catalogId==='opening-night'));
-    assert.ok(calls.every(host=>host==='streamed.pk'||host.endsWith('espn.com')));
+    assert.ok(calls.every(host=>host==='streamed.pk'||host==='cdn.strm-api.org'||host.endsWith('espn.com')));
     assert.equal((await request('/api/tvm/tv/1396')).status,410);
     const youtube=await request('/api/resolve',{url:'https://youtube.com/live/test'});assert.equal(youtube.status,422);assert.equal(youtube.data.code,'LIVE_AGGREGATORS_ONLY');
     assert.equal((await request('/api/media/test')).status,410);

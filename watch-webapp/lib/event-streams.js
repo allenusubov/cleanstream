@@ -64,11 +64,11 @@ export async function walkEventStreams(root,{inspectStatic,inspectBrowser,onCand
     signal?.addEventListener('abort',cancel,{once:true});
     const accept=(items,route)=>{
       for(const item of items||[]){
-        const url=item.url||item.mediaUrl;if(!url||candidates.has(url))continue;
+        const url=item.url||item.mediaUrl||item.embedUrl||item.externalUrl;if(!url||candidates.has(url))continue;
         const candidate={...item,routeUrl:route.url,routeLabel:route.label};candidates.set(url,candidate);onCandidate(candidate);
         if(candidates.size>=maxCandidates){limited=true;stopped=true;break;}
       }
-      if(candidates.size&&!scanAll)stopped=true;
+      if([...candidates.values()].some(item=>!item.externalUrl)&&!scanAll)stopped=true;
       if(stopped){pending.length=0;browserQueue.length=0;}
     };
     const addRoutes=(routes,parent)=>{
@@ -78,7 +78,7 @@ export async function walkEventStreams(root,{inspectStatic,inspectBrowser,onCand
         if(seen.size>=maxRoutes){limited=true;break;}
         seen.add(route.url);pending.push({...route,depth:parent.depth+1,parentUrl:parent.url,eventUrl:root});
       }
-      pending.sort((a,b)=>priority(b.url)-priority(a.url)||(a.kind==='frame'?-1:0)-(b.kind==='frame'?-1:0)||a.depth-b.depth);
+      pending.sort((a,b)=>priority(b.url)-priority(a.url)||(a.kind==='player-media'?-2:a.kind==='frame'?-1:0)-(b.kind==='player-media'?-2:b.kind==='frame'?-1:0)||a.depth-b.depth);
     };
     const run=async(route,browser)=>{
       try{
@@ -87,9 +87,10 @@ export async function walkEventStreams(root,{inspectStatic,inspectBrowser,onCand
         else {
           const result=await inspectStatic(route.url,route);
           accept(result.media,route);
-          if(!stopped){addRoutes(result.routes,route);if(!result.media?.length)browserQueue.push({...route,directory:Boolean(result.routes?.length)});}
+          if(!stopped)accept(result.players,route);
+          if(!stopped){addRoutes(result.routes,route);if(!result.media?.length&&result.browser!==false)browserQueue.push({...route,directory:Boolean(result.routes?.length)});}
         }
-      }catch(cause){if(!signal?.aborted){errors.push({code:extractionError(cause).code,cause});if(!browser&&!stopped)browserQueue.push(route);}}
+      }catch(cause){if(!signal?.aborted){errors.push({code:extractionError(cause).code,cause});if(!browser&&!stopped&&!['EVENT_UNAVAILABLE','FEED_FORMAT_CHANGED','FEED_UNAVAILABLE','STREAMS_NOT_POSTED'].includes(cause.code))browserQueue.push(route);}}
       finally{if(browser)browsing--;else{fetching--;checked++;}if(!signal?.aborted)report();pump();}
     };
     const pump=()=>{

@@ -155,6 +155,7 @@ a { text-decoration: none; }
 }
 
 #video.is-visible { display: block; }
+.provider-player {position:absolute;inset:0;width:100%;height:100%;border:0;background:#000;z-index:1;}
 
 .player-empty {
   position: absolute;
@@ -424,6 +425,7 @@ a { text-decoration: none; }
 .source-choice:not(:disabled):hover .source-detail {color:#333;}
 .source-choice:disabled {cursor:default;color:var(--muted);}
 .source-choice.is-pending .source-detail,.source-choice.is-pending .source-rank {color:var(--muted);}
+.source-inspection,.source-inspection:hover {cursor:default;background:transparent!important;color:var(--muted)!important;}
 .results-message {font-size:18px;font-weight:700;line-height:1.4;}
 .more-events {margin-top:30px;font-size:20px;}
 .check-sources {font-size:13px;}

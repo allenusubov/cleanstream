@@ -4,16 +4,16 @@ import {aggregatorEvent} from './live-only.js';
 import {parseQuery} from './events.js';
 import {enabledCustomSources} from './custom-sources.js';
 import {eventCategory,EVENT_CATEGORIES} from './event-preferences.js';
+import {sourceAvailable,orderedSources,sourceCountLabel} from './playback-selection.js';
 
 const labels={
   CHECKING:'CHECKING SOURCES',READY:'SOURCES READY',NO_MATCHING_SOURCES:'NO SOURCES FOUND',
   NO_WORKING_SOURCES:'NO SOURCES FOUND',SOURCES_UNAVAILABLE:'SOURCES UNAVAILABLE'
 };
 const element=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined&&text!==null)node.textContent=text;return node;};
-const countLabel=count=>`${count} SOURCE${count===1?'':'S'} FOUND`;
-const playableSource=source=>Boolean(source && (source.mediaUrl||source.hasStreamOptions&&source.sourceUrl) && !source.unavailable && (!source.expiresAt||source.expiresAt>Date.now()+3000));
-const sourceKey=source=>source.mediaUrl||source.id||source.sourceUrl;
-const SOURCE_CACHE_PREFIX='cleanstream.eventSources.v3.';
+const playableSource=source=>sourceAvailable(source);
+const sourceKey=source=>source.mediaUrl||source.embedUrl||source.externalUrl||source.id||source.sourceUrl;
+const SOURCE_CACHE_PREFIX='cleanstream.eventSources.v4.';
 function readSourceCache(eventId){try{const value=JSON.parse(sessionStorage.getItem(`${SOURCE_CACHE_PREFIX}${eventId}`)||'null');if(value&&Date.now()-value.time<10*60*1000){value.sources=(value.sources||[]).filter(playableSource);return value;}}catch{}return null;}
 function writeSourceCache(eventId,sources,meta={}){try{sessionStorage.setItem(`${SOURCE_CACHE_PREFIX}${eventId}`,JSON.stringify({time:Date.now(),sources:sources.filter(playableSource),...meta}));}catch{}}
 function contentCategory(item){return eventCategory(item)||'OTHER';}
@@ -39,29 +39,36 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
     method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customSources:compactSources(enabledCustomSources(),item),mode,resume,recheck,checkedProviderIds:resume?discoveryState.get(item.id)?.checkedProviderIds||[]:[],playbackHistory:loadPlaybackHistory().filter(value=>value.context===contextForChecks())}),signal
   });
   const setExploreMode=value=>{home.classList.toggle('is-explore',value);filterRow.hidden=!value;form.hidden=value;};
-  const bestPlayable=id=>(latest.get(id)||[]).find(playableSource)||null;
+  const bestPlayable=(id,item={})=>orderedSources(latest.get(id)||[],item,contextForChecks(),loadPlaybackHistory())[0]||null;
 
   function renderSources(item,row,entries){
     const list=row.querySelector('.source-list');if(!list)return;list.replaceChildren();
-    const readySources=(entries||[]).filter(playableSource);
+    const readySources=orderedSources(entries||[],item,contextForChecks(),loadPlaybackHistory());
     for(const [i,source] of readySources.entries()) {
       const button=element('button','source-choice');button.type='button';
       const left=element('span','source-copy');left.append(element('span','source-name',source.displayName||source.name||`SOURCE ${String(i+1).padStart(2,'0')}`));
       if(source.quality)left.append(element('span','source-detail',`${source.quality}P`));
       else if(source.mirrorLabel && source.mirrorLabel!=='DEFAULT')left.append(element('span','source-detail',source.mirrorLabel));
-      button.append(left);button.append(element('span','source-rank',source.mediaUrl?playbackLabel(source,item,contextForChecks()):'STREAM OPTIONS FOUND'));
+      button.append(left);button.append(element('span','source-rank',source.externalUrl?'OPEN ORIGINAL SITE':source.embedUrl?'PROVIDER PLAYER':source.mediaUrl?playbackLabel(source,item,contextForChecks()):'STREAM OPTIONS FOUND'));
       if(source.mirrorLabel&&source.mirrorLabel!=='DEFAULT'&&source.quality)left.append(element('span','source-detail',source.mirrorLabel));
       button.addEventListener('click',()=>onWatch(source,latest.get(item.id)||[],item));list.append(button);
     }
     const state=discoveryState.get(item.id);
+    const checkLabels={CHECKING:'CHECKING PROVIDER',NO_MATCH:'NO MATCHING EVENT',CHECK_INCOMPLETE:'CHECK INCOMPLETE',WAITING_FOR_STREAMS:'STREAMS NOT POSTED YET',OPTIONS_FOUND:'STREAM OPTIONS FOUND',LINKS_FOUND:'VIDEO LINKS FOUND'};
+    for(const check of state?.providerChecks||[]){
+      if(readySources.some(source=>source.siteId===check.siteId||source.providerHost===check.host))continue;
+      const entry=element('div','source-choice source-inspection'),left=element('span','source-copy');
+      left.append(element('span','source-name',String(check.host||'PROVIDER').toUpperCase()));
+      entry.append(left,element('span','source-rank',checkLabels[check.status]||'CHECK INCOMPLETE'));list.append(entry);
+    }
     if(!state&&!readySources.length)list.append(element('p','results-subtext','CLICK CHECK SOURCES TO FIND STREAMS'));
   }
 
   function updateAction(item,row,{done=false,status='CHECKING'}={}){
     const state=row.querySelector('.event-state'),action=row.querySelector('.event-action');
-    const readySources=(latest.get(item.id)||[]).filter(playableSource),playable=bestPlayable(item.id);
-    if(state){if(readySources.length)state.textContent=countLabel(readySources.length);else if(done)state.textContent=discoveryMessage({status,partial:discoveryState.get(item.id)?.partial,hasMore:discoveryState.get(item.id)?.hasMore});else state.textContent='';}
-    if(action){if(playable){action.textContent='WATCH';action.disabled=false;action.dataset.mode='watch';}
+    const readySources=(latest.get(item.id)||[]).filter(playableSource),playable=bestPlayable(item.id,item);
+    if(state){if(readySources.length)state.textContent=sourceCountLabel(readySources);else if(done)state.textContent=discoveryMessage({status,partial:discoveryState.get(item.id)?.partial,hasMore:discoveryState.get(item.id)?.hasMore});else state.textContent='';}
+    if(action){if(playable){action.textContent=playable.externalUrl?'OPEN SITE':'WATCH';action.disabled=false;action.dataset.mode=playable.externalUrl?'external':'watch';}
       else if(discoveryState.get(item.id)?.running){action.textContent='CHECKING SOURCES';action.disabled=true;action.dataset.mode='checking';}
       else {action.textContent=discoveryState.get(item.id)?.hasMore?'CHECK MORE':discoveryState.get(item.id)?.done?'RECHECK':'CHECK SOURCES';action.disabled=false;action.dataset.mode='check';}}
     const menu=row.querySelector('.event-options'),options=row.querySelector('.event-options-list'),check=discoveryState.get(item.id);
@@ -80,7 +87,7 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
       while((end=buffer.indexOf('\n'))>=0){
         const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line)continue;let data;try{data=JSON.parse(line);}catch{continue;}if(data.type!=='update')continue;
         const merged=new Map(previous.filter(playableSource).map(source=>[sourceKey(source),source]));for(const source of data.sources||[]){if(playableSource(source))merged.set(sourceKey(source),source);else merged.delete(sourceKey(source));}found=[...merged.values()];finalStatus=data.status||finalStatus;doneState=Boolean(data.done);
-        latest.set(item.id,found);writeSourceCache(item.id,found,{done:doneState,status:finalStatus,partial:Boolean(data.partial),hasMore:Boolean(data.hasMore),checkedProviderIds:data.checkedProviderIds||[],mode:discoveryState.get(item.id)?.mode||'light'});
+        latest.set(item.id,found);writeSourceCache(item.id,found,{done:doneState,status:finalStatus,partial:Boolean(data.partial),hasMore:Boolean(data.hasMore),checkedProviderIds:data.checkedProviderIds||[],providerChecks:data.providerChecks||[],mode:discoveryState.get(item.id)?.mode||'light'});
         window.dispatchEvent(new CustomEvent('cleanstream:sources-updated',{detail:{eventId:item.id,sources:found}}));onUpdate(found,data);
       }
     }
@@ -89,7 +96,7 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
   async function sources(item,row,token,{mode='light',resume=false,recheck=false}={}) {
     const existing=discoveryState.get(item.id);if(existing?.running)return existing.promise;
     if(recheck){latest.set(item.id,[]);resume=false;}
-    const state={mode,running:true,done:false,status:'CHECKING',partial:false,hasMore:false,checkedProviderIds:resume?existing?.checkedProviderIds||[]:[],promise:null};discoveryState.set(item.id,state);
+    const state={mode,running:true,done:false,status:'CHECKING',partial:false,hasMore:false,checkedProviderIds:resume?existing?.checkedProviderIds||[]:[],providerChecks:resume?existing?.providerChecks||[]:[],promise:null};discoveryState.set(item.id,state);
     row.classList.add('is-expanded');row.querySelector('.event-title-button').setAttribute('aria-expanded','true');row.querySelector('.source-list').hidden=false;
     updateAction(item,row);renderSources(item,row,latest.get(item.id)||[]);
     const signal=controller().signal;
@@ -98,7 +105,7 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
         let response=await sourceRequest(item,signal,mode,resume,recheck);
         if(response.status===404){await fetch(`/api/events?q=${encodeURIComponent(lastQuery||item.title)}`,{signal});response=await sourceRequest(item,signal,mode,resume,recheck);}
         const result=await consumeStream(response,item,(visible,data)=>{
-          if(token!==generation)return;state.checkedProviderIds=data.checkedProviderIds||state.checkedProviderIds;state.partial=Boolean(data.partial);state.hasMore=Boolean(data.hasMore);state.running=!data.done;if(row.classList.contains('is-expanded'))renderSources(item,row,visible);
+          if(token!==generation)return;state.checkedProviderIds=data.checkedProviderIds||state.checkedProviderIds;state.providerChecks=data.providerChecks||state.providerChecks;state.partial=Boolean(data.partial);state.hasMore=Boolean(data.hasMore);state.running=!data.done;if(row.classList.contains('is-expanded'))renderSources(item,row,visible);
           state.done=Boolean(data.done);state.running=!data.done;state.status=data.status||state.status;updateAction(item,row,{done:data.done,status:state.status});
         },resume||mode==='deep');
         state.done=result.done;state.status=result.status||state.status;
@@ -114,7 +121,7 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
   }
 
   function row(item,token,{expanded=false}={}) {
-    if(!latest.has(item.id)){const cached=readSourceCache(item.id);if(cached?.sources?.length){latest.set(item.id,cached.sources);if(!discoveryState.has(item.id))discoveryState.set(item.id,{done:cached.done,hasMore:cached.hasMore,mode:cached.mode||'light',checkedProviderIds:cached.checkedProviderIds||[],running:false});}}
+    if(!latest.has(item.id)){const cached=readSourceCache(item.id);if(cached?.sources?.length){latest.set(item.id,cached.sources);if(!discoveryState.has(item.id))discoveryState.set(item.id,{done:cached.done,hasMore:cached.hasMore,mode:cached.mode||'light',checkedProviderIds:cached.checkedProviderIds||[],providerChecks:cached.providerChecks||[],running:false});}}
     const article=element('article','event-row');article.dataset.category=contentCategory(item);article.dataset.eventId=item.id;
     const heading=element('div','event-heading'),info=element('div','event-info');
     const title=element('h3','event-title'),titleButton=element('button','event-title-button',item.title);titleButton.type='button';titleButton.setAttribute('aria-expanded',String(expanded));title.append(titleButton);info.append(title);appendWhen(info,item);
@@ -124,7 +131,7 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
     const list=element('div','source-list');list.hidden=!expanded;heading.append(info,right);article.append(heading,list);article.classList.toggle('is-expanded',expanded);
     const expandAndCheck=()=>{const open=!article.classList.contains('is-expanded');article.classList.toggle('is-expanded',open);titleButton.setAttribute('aria-expanded',String(open));list.hidden=!open;if(open)renderSources(item,article,latest.get(item.id)||[]);};
     titleButton.addEventListener('click',expandAndCheck);
-    action.addEventListener('click',()=>{const playable=bestPlayable(item.id);if(playable){onWatch(playable,latest.get(item.id)||[],item);return;}sources(item,article,token,{mode:discoveryState.get(item.id)?.mode||'light',resume:Boolean(discoveryState.get(item.id)?.hasMore),recheck:Boolean(discoveryState.get(item.id)?.done&&!discoveryState.get(item.id)?.hasMore)});});
+    action.addEventListener('click',()=>{const playable=bestPlayable(item.id,item);if(playable){onWatch(playable,latest.get(item.id)||[],item);return;}sources(item,article,token,{mode:discoveryState.get(item.id)?.mode||'light',resume:Boolean(discoveryState.get(item.id)?.hasMore),recheck:Boolean(discoveryState.get(item.id)?.done&&!discoveryState.get(item.id)?.hasMore)});});
     updateAction(item,article);if(expanded)renderSources(item,article,latest.get(item.id)||[]);
     return article;
   }
@@ -145,9 +152,9 @@ export function initSearch(onWatch,onNavigate=()=>{},contextForChecks=()=>playba
     const q=String(value).trim();if(!q)return input.focus();input.value=q;if(navigate)onNavigate(q);
     stop();const token=++generation;latest=new Map();lastQuery=q;results.hidden=false;results.replaceChildren();home.classList.add('has-results');setExploreMode(false);
     const title=element('h2','results-title',`${q.toUpperCase()} RESULTS:`);results.append(title);const status=element('p','results-message','SEARCHING');status.setAttribute('role','status');results.append(status);
-    let cached;try{cached=JSON.parse(sessionStorage.getItem(`live-only-v21:${q.toLowerCase()}`));}catch{}
+    let cached;try{cached=JSON.parse(sessionStorage.getItem(`live-only-v23:${q.toLowerCase()}`));}catch{}
     try{
-      const signal=controller().signal;const response=cached&&Date.now()-cached.time<60000?null:await fetch(`/api/search?q=${encodeURIComponent(q)}`,{signal});if(response&&!response.ok)throw new Error();const data=response?await response.json():cached.data;if(token!==generation)return;if(response)try{sessionStorage.setItem(`live-only-v21:${q.toLowerCase()}`,JSON.stringify({time:Date.now(),data}));}catch{}
+      const signal=controller().signal;const response=cached&&Date.now()-cached.time<60000?null:await fetch(`/api/search?q=${encodeURIComponent(q)}`,{signal});if(response&&!response.ok)throw new Error();const data=response?await response.json():cached.data;if(token!==generation)return;if(response)try{sessionStorage.setItem(`live-only-v23:${q.toLowerCase()}`,JSON.stringify({time:Date.now(),data}));}catch{}
       status.remove();const live=data.live||{events:[],alternatives:[],complete:false,notices:[]};
       const liveEvents=(live.events||[]).filter(aggregatorEvent);title.textContent=`${q.toUpperCase()} EVENTS:`;
       const notices={SCHEDULE_UNAVAILABLE:'PART OF THE LIVE SCHEDULE IS TEMPORARILY UNAVAILABLE.',CATALOG_UNAVAILABLE:'PART OF THE EVENT CATALOG IS TEMPORARILY UNAVAILABLE.'};

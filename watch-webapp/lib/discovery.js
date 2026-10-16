@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {eachConcurrent,withSignal,aborted} from './discovery-control.js';
 import {normalize,matchesParticipants} from '../public/events.js';
-import {withPage,visit,resolve,clearResolved} from './resolver.js';
+import {withPage,visit,resolve,clearResolved,readGscCodec} from './resolver.js';
 import {AppError,WorkPool,fetchLimited} from './network.js';
 import {streamedPages} from './catalog.js';
 import {directoryLinks} from './directory.js';
 import {CATEGORY_ALIASES} from './source-profile.js';
 import {adapterRoutes,structuredEventLinks} from './provider-adapters.js';
 import {cleanPlaybackHistory,historyPriority,hostOf} from '../public/playback-history.js';
+import {knownGscSite,gscFeedInPage,gscEventPages,gscPagePlayers,clearGscFeed} from './gsc-feed.js';
 
 const registry=JSON.parse(process.env.SOURCE_REGISTRY_JSON || fs.readFileSync(new URL('../sources.json',import.meta.url),'utf8'));
 const builtinResults=new Map();
@@ -85,6 +86,7 @@ async function readIndex(site,indexUrl,event) {
     let staticLinks=[], staticError=null;
     try {
       const response=await fetchLimited(indexUrl,{limit:2*1024*1024,partial:true});
+      if(gscFeedInPage(response.body.toString()))return gscEventPages(event,indexUrl,{readCodec:readGscCodec});
       staticLinks=[...directoryLinks(response.body.toString(),response.url,site.allowedHosts,site.custom?1500:600),...structuredEventLinks(response.body.toString(),response.url)].filter(link=>hostAllowed(new URL(link.url).hostname,site.allowedHosts));
       const fragmentRoute=Boolean(new URL(indexUrl).hash);
       // Hash routes (for example /#nfl) are client-side navigation. A normal HTTP
@@ -161,6 +163,8 @@ function structurePriority(site,link){
 
 export async function genericPages(site,event,{light=false}={}) {
   const roots=rootsFor(site,event),key=String(event.league||event.sport||'').toUpperCase();
+  const feedRoot=roots.find(knownGscSite);
+  if(feedRoot)return gscEventPages(event,feedRoot,{readCodec:readGscCodec});
   const configured=site.categories?.[key]??site.categories?.[String(event.sport||'').toUpperCase()]??site.categories?.['*'];
   const routeKey=`${site.id}|${key}`,learned=routeHistory.get(routeKey);
   const explicit=configuredUrls(site,configured,event,roots[0]);
@@ -338,7 +342,7 @@ export function providerPriority(site,event,playbackHistory=[]){
   const exact=playbackHistory.filter(value=>value.host===host&&value.sport===sport);
   const records=exact.length?exact:playbackHistory.filter(value=>value.host===host);
   const evidence=records.length?Math.max(...records.map(value=>historyPriority(value))):0;
-  return evidence+(sourceSupportState(site,event)==='YES'?15:0)+(site.events?.[event.id]?25:site.type==='streamed'?20:0);
+  return evidence+(sourceSupportState(site,event)==='YES'?15:0)+(site.events?.[event.id]?25:site.type==='streamed'||site.indexUrls?.some(knownGscSite)?20:0);
 }
 function pendingSource(site,target,event,score=25){
   const stableId=idFor(`${event.id}|${site.id}|${target.kind||'page'}|${target.url}`);
@@ -360,9 +364,11 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
   if(!recheck&&old && !old.controller?.signal.aborted && (!old.done || (!resume&&old.expiresAt>Date.now()))) return old;
   const seed=(!recheck&&(resume?old?.sources:!light?jobs.get(`${baseKey}|light`)?.sources:[]))||[];
   const controller=new AbortController();
+  const providerChecks=new Map(resume&&!recheck?old?.providerChecks||[]:[]);
   const job={sources:seed.filter(source=>source.expiresAt>Date.now()).map(source=>({...source})),done:false,status:'CHECKING',expiresAt:0,listeners:new Set(),started:false,mode:light?'light':'deep',controller,checked:resume&&!recheck?old?.cursor||0:0,total:0,partial:false,cursor:resume&&!recheck?old?.cursor||0:0,startedAt:0,firstSourceMs:null,siteOrder:resume&&!recheck?old?.siteOrder||null:null,continuation:false,completedSiteIds:new Set(resume&&!recheck?[...(old?.completedSiteIds||[]),...(Array.isArray(checkedProviderIds)?checkedProviderIds.slice(0,4000).filter(value=>typeof value==='string'&&value.length<=128):[])]:[])};
   job.cancel=()=>controller.abort(new DOMException('Cancelled','AbortError'));
-  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status,mode:job.mode,checked:job.checked,total:job.total,partial:job.partial,hasMore:job.continuation,checkedProviderIds:[...job.completedSiteIds],firstSourceMs:job.firstSourceMs,elapsedMs:job.startedAt?Date.now()-job.startedAt:0});
+  job.providerChecks=providerChecks;
+  job.snapshot=()=>({type:'update',eventId:event.id,sources:rank(job.sources),done:job.done,status:job.status,mode:job.mode,checked:job.checked,total:job.total,partial:job.partial,hasMore:job.continuation,checkedProviderIds:[...job.completedSiteIds],providerChecks:[...providerChecks.values()].slice(-40),firstSourceMs:job.firstSourceMs,elapsedMs:job.startedAt?Date.now()-job.startedAt:0});
   job.publish=()=>{for(const listener of job.listeners)listener(job.snapshot());};
   const upsert=source=>{
     const existing=job.sources.find(item=>item.id===source.id||item.mediaUrl&&item.mediaUrl===source.mediaUrl);
@@ -379,10 +385,11 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
   };
   job.start=()=>{
     if(job.started)return;job.started=true;job.startedAt=Date.now();
-    const budget=Math.max(5000,Math.min(120000,Number(process.env.DISCOVERY_TIMEOUT_MS)||(light?12000:25000)));
+    const feedEnabled=[...registry,...customSites].some(site=>site.enabled!==false&&site.indexUrls?.some(knownGscSite));
+    const budget=Math.max(5000,Math.min(120000,Number(process.env.DISCOVERY_TIMEOUT_MS)||(light?(feedEnabled?20000:12000):25000)));
     const timer=setTimeout(()=>controller.abort(new Error('SEARCH_LIMIT_REACHED')),budget);
     job.promise=withSignal(controller.signal,()=>pool.run(async()=>{
-      let sites=mergeProviders(registry,customSites).filter(site=>(site.type==='streamed'||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event));
+      let sites=mergeProviders(registry,customSites).filter(site=>(['streamed','gsc'].includes(site.type)||site.custom||event.participants?.length>=2)&&siteSupportsEvent(site,event));
       const sport=String(event.league||event.sport||'OTHER').toUpperCase();
       sites=sites.map(site=>{
         const host=hostOf(site.displayHost||site.indexUrls?.[0]||'');
@@ -395,8 +402,11 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
       let matched=0,unavailable=0,timedOut=0;
       const checkSite=async site=>{
         aborted();
+        const status=(state,reason='')=>{providerChecks.set(site.id,{siteId:site.id,host:site.displayHost||hostOf(site.indexUrls?.[0]||''),status:state,reason});job.publish();};
+        status('CHECKING');
         const cacheKey=`${origin}|${event.id}|${site.id}`;
         if(recheck){
+          if(site.indexUrls?.some(knownGscSite))clearGscFeed();
           builtinResults.delete(cacheKey);eventPageHistory.delete(`${site.id}|${event.id}`);
           for(const key of indexes.keys())if(key.startsWith(site.id+'|'))indexes.delete(key);
           for(const key of mirrorCache.keys())if(key.includes('|'+site.id+'|'))mirrorCache.delete(key);
@@ -404,7 +414,7 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
         if(!site.custom&&!recheck){
           const ready=(builtinResults.get(cacheKey)||[]).filter(source=>source.expiresAt>Date.now()+3000);
           for(const source of ready)upsert({...source});
-          if(light&&ready.length)return;
+          if(light&&ready.length){status('LINKS_FOUND');return;}
         }
         const mirrorKey=`${site.id}|${String(event.league||event.sport||'').toUpperCase()}`;
         const resolveTarget=async target=>{
@@ -413,8 +423,9 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
             if(recheck)clearResolved(target.url,origin);
             const publish=(media,index=0)=>{
               remove(pending.id);
-              const id=idFor(`${pending.id}|${media.mediaUrl}`);
+              const id=idFor(`${pending.id}|${media.mediaUrl||media.embedUrl||media.externalUrl}`);
               upsert({...pending,...media,id,pending:false,unavailable:Boolean(media.unavailable),score:50+providerPriority(site,event,playbackHistory),deepVerified:false});
+              status('LINKS_FOUND');
             };
             const publishOptions=count=>{
               if(!job.sources.some(source=>source.mediaUrl&&source.siteId===site.id))upsert({...pending,pending:false,hasStreamOptions:true,routeCount:count,expiresAt:Date.now()+300000,score:40+providerPriority(site,event,playbackHistory)});
@@ -424,7 +435,7 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
             const durablePage=target.parentUrl||target.url;if(durablePage)eventPageHistory.set(`${site.id}|${event.id}`,{url:durablePage,time:Date.now(),categoryUrl:target.categoryUrl||''});
             for(const [index,media] of candidates.entries()){
               const score=100+providerPriority(site,event,playbackHistory)-index*.25;
-              const id=idFor(`${pending.id}|${media.mediaUrl}`);
+              const id=idFor(`${pending.id}|${media.mediaUrl||media.embedUrl||media.externalUrl}`);
               const active=upsert({...pending,...media,id,pending:false,unavailable:false,score,deepVerified:false,verifiedAt:media.verifiedAt});
               if(!site.custom){
                 const cached=builtinResults.get(cacheKey)||[];
@@ -433,16 +444,30 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
               }
             }
             if(target.text){const remembered=mirrorHistory.get(mirrorKey)||new Set();remembered.add(target.text);mirrorHistory.set(mirrorKey,remembered);}
-          }catch{}
+          }catch(error){if(!job.sources.some(source=>source.siteId===site.id))status('CHECK_INCOMPLETE',error.code||'EXTRACTION_FAILED');}
         };
         try{
           const pages=site.events?.[event.id]?[{url:site.events[event.id],text:event.title}]:site.type==='streamed'?await streamedPages(event):await genericPages(site,event,{light});
+          aborted();
           const uniquePages=[...new Map(pages.map(page=>[page.url,page])).values()];
+          if(uniquePages.length&&uniquePages.every(page=>page.streamsPending)){matched++;status('WAITING_FOR_STREAMS');return;}
+          const group=uniquePages.find(page=>page.parentUrl);
+          if(group){
+            const target={kind:'page',url:group.parentUrl,parentUrl:group.parentUrl,categoryUrl:group.categoryUrl,text:'STREAM OPTIONS'};
+            const pendingGroup={...pendingSource(site,target,event,40+providerPriority(site,event,playbackHistory)),pending:false,hasStreamOptions:true,routeCount:uniquePages.length,expiresAt:Date.now()+120000};
+            upsert(pendingGroup);
+            const players=await gscPagePlayers(group.parentUrl,{readCodec:readGscCodec,origin});
+            aborted();
+            for(const player of players){
+              upsert({...pendingSource(site,target,event,50+providerPriority(site,event,playbackHistory)),...player,id:idFor(`${site.id}|${player.embedUrl||player.externalUrl}`),pending:false,castEligible:false,provisional:true,expiresAt:Date.now()+120000});
+            }
+            if(players.length)remove(pendingGroup.id);
+          }
           const pagesToCheck=light?uniquePages.slice(0,1):uniquePages;
-          matched+=pagesToCheck.length;if(!pagesToCheck.length)return;
+          matched+=pagesToCheck.length;if(!pagesToCheck.length){status('NO_MATCH');return;}
           const defaultTasks=[],mirrorTasks=[];
           for(const page of pagesToCheck){
-            const baseTarget={kind:'page',url:page.url,text:'DEFAULT',parentUrl:page.url,categoryUrl:page.categoryUrl||''};
+            const baseTarget={kind:'page',url:page.url,text:page.mirrorLabel||'DEFAULT',parentUrl:page.parentUrl||page.url,categoryUrl:page.categoryUrl||''};
             defaultTasks.push(resolveTarget(baseTarget));
             if(!light)mirrorTasks.push(async()=>{
               const targets=await mirrorTargets(site,page,event,{light:false});
@@ -453,22 +478,25 @@ export function eventJob(event,origin,customSites=[],{mode='light',resume=false,
           await Promise.allSettled(defaultTasks);
           if(!controller.signal.aborted)await eachConcurrent(mirrorTasks,1,task=>task());
           aborted();
-        }catch{unavailable++;}
+          const available=job.sources.filter(source=>source.siteId===site.id);
+          status(available.some(source=>source.mediaUrl)?'LINKS_FOUND':available.some(source=>source.hasStreamOptions)?'OPTIONS_FOUND':'CHECK_INCOMPLETE');
+        }catch(error){unavailable++;status('CHECK_INCOMPLETE',error.code||'SOURCE_NETWORK_ERROR');}
       };
       const eligibleIds=new Set(sites.map(site=>site.id));
       job.completedSiteIds=new Set([...job.completedSiteIds].filter(id=>eligibleIds.has(id)));
       job.checked=job.completedSiteIds.size;
       const batch=sites.filter(site=>!job.completedSiteIds.has(site.id)).slice(0,4);
       await eachConcurrent(batch,4,async site=>{
-        const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(light?6500:16000)]);
+        const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(light&&!site.indexUrls?.some(knownGscSite)?6500:16000)]);
         try{await withSignal(signal,()=>checkSite(site));}finally{
           if(signal.aborted&&!controller.signal.aborted)timedOut++;
+          if(signal.aborted&&providerChecks.get(site.id)?.status==='CHECKING')providerChecks.set(site.id,{...providerChecks.get(site.id),status:'CHECK_INCOMPLETE',reason:'SOURCE_TIMEOUT'});
           if(!controller.signal.aborted){job.completedSiteIds.add(site.id);job.checked=job.completedSiteIds.size;job.cursor=job.checked;job.publish();}
         }
       },{signal:controller.signal});
       job.continuation=sites.some(site=>!job.completedSiteIds.has(site.id));
       job.partial=job.continuation||timedOut>0;
-      const ready=job.sources.filter(source=>(source.mediaUrl||source.hasStreamOptions)&&!source.unavailable).length;
+      const ready=job.sources.filter(source=>(source.mediaUrl||source.embedUrl||source.externalUrl||source.hasStreamOptions)&&!source.unavailable).length;
       job.status=ready?'READY':job.partial?'SEARCH_LIMIT_REACHED':unavailable===sites.length&&sites.length?'SOURCES_UNAVAILABLE':matched?'NO_WORKING_SOURCES':'NO_MATCHING_SOURCES';
     })).catch(error=>{job.partial=true;job.status=job.sources.length?'READY':error.code||'SEARCH_LIMIT_REACHED';}).finally(()=>{
       clearTimeout(timer);

@@ -2,11 +2,12 @@
 // Playback failure advances this queue within the same explicit user action.
 export async function playResolvedCandidates({open,play,onCandidate=()=>{},onProgress=()=>{},signal}){
   const network=new AbortController(),combined=AbortSignal.any([signal,network.signal]);
-  const queue=[],seen=new Set();let ended=false,wake=()=>{},failure=null,reader;
+  const queue=[],seen=new Set();let ended=false,wake=()=>{},failure=null,reader,hasExternal=false;
   const accept=data=>{
     if(combined.aborted)return;
-    if(data.type==='candidate'&&data.candidate?.mediaUrl&&!seen.has(data.candidate.mediaUrl)){
-      seen.add(data.candidate.mediaUrl);queue.push(data.candidate);onCandidate(data.candidate);wake();
+    const identity=data.candidate?.mediaUrl||data.candidate?.embedUrl||data.candidate?.externalUrl;
+    if(data.type==='candidate'&&identity&&!seen.has(identity)){
+      seen.add(identity);if(data.candidate.externalUrl)hasExternal=true;else queue.push(data.candidate);onCandidate(data.candidate);wake();
     }else if(data.type==='progress')onProgress(data);
     else if(data.type==='error'){failure=new Error(data.code||'EXTRACTION_FAILED');}
   };
@@ -36,6 +37,7 @@ export async function playResolvedCandidates({open,play,onCandidate=()=>{},onPro
         const item=queue.shift();
         try{await play(item);return item;}catch(error){if(signal.aborted)throw error;playbackError=error;}
       }else if(ended){
+        if(hasExternal){const error=new Error('ORIGINAL_SITE_REQUIRED');error.cause=playbackError||failure;throw error;}
         if(playbackError){const error=new Error('NO_DEVICE_PLAYBACK');error.cause=playbackError;throw error;}
         throw failure||new Error('NO_MEDIA');
       }

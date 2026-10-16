@@ -1,11 +1,13 @@
 import crypto from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {safeURL, fetchLimited, AppError, WorkPool} from './network.js';
+import {safeURL, publicURL, fetchLimited, AppError, WorkPool} from './network.js';
 import {currentSignal,aborted,withSignal} from './discovery-control.js';
 import {ReusableBrowser} from './browser-lifecycle.js';
 import {excludedPlatform} from '../public/live-only.js';
 import {eventStreamRoutes,walkEventStreams,extractionError} from './event-streams.js';
 import {historyPriority,hostOf} from '../public/playback-history.js';
+import {knownGscSite,gscFeedInPage,gscPageRoutes,gscPagePlayers} from './gsc-feed.js';
+import {configuredPlayerSources} from './player-sources.js';
 const pool=new WorkPool(Math.max(1,Math.min(6,Number(process.env.BROWSER_CONCURRENCY)||4)));
 let chromiumPromise=null;
 async function chromiumApi(){
@@ -78,13 +80,27 @@ function htmlMedia(body,base){
   for(const match of text.matchAll(/https?:\\\/\\\/[^"'<>\s]+?\.(?:m3u8|mp4|m4v|mov|webm)(?:\?[^"'<>\s]*)?/ig))add(match[0]);
   return [...found.values()].slice(0,8);
 }
+export async function readGscCodec(url){
+  return withPage(async page=>{
+    await visit(page,url);
+    return page.evaluate(()=>({key:globalThis.KF_KEY,plain:globalThis.PLAIN,mixed:globalThis.MIXED}));
+  });
+}
 async function staticInspect(url,route={}){
     if(MEDIA.test(url))return {media:[{url,isHls:HLS.test(url),contentType:''}],routes:[]};
-    const response=await fetchLimited(url,{limit:1536*1024,partial:true,headers:{'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36',...(route.parentUrl?{Referer:route.parentUrl}:{})}});
+    if(knownGscSite(url)){
+      const routes=await gscPageRoutes(url,{readCodec:readGscCodec});
+      if(routes.length)return {media:[],players:await gscPagePlayers(url,{readCodec:readGscCodec,origin:route.appOrigin}),routes,browser:false};
+    }
+    const response=await fetchLimited(url,{limit:1536*1024,partial:true,headers:{'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36',...(route.parentUrl&&!route.noReferer?{Referer:route.parentUrl}:{})}});
     const type=response.headers.get('content-type')||'';
     const playlist=response.body.subarray(0,100).toString().trimStart().startsWith('#EXTM3U');
     if(playlist||MEDIA.test(response.url)||/mpegurl|^video\/(mp4|webm|quicktime)/i.test(type))return {media:[{url:response.url,isHls:playlist||HLS.test(response.url)||/mpegurl/i.test(type),contentType:playlist?'application/vnd.apple.mpegurl':type}],routes:[]};
-    if(/text\/html|application\/(?:xhtml|json)/i.test(type)||!type){const html=response.body.toString();return {media:htmlMedia(html,response.url),routes:eventStreamRoutes(html,response.url,{eventUrl:route.eventUrl||url})};}
+    if(/text\/html|application\/(?:xhtml|json)/i.test(type)||!type){
+      const html=response.body.toString();
+      if(gscFeedInPage(html)){const routes=await gscPageRoutes(response.url,{readCodec:readGscCodec});if(routes.length)return {media:[],players:await gscPagePlayers(response.url,{readCodec:readGscCodec,origin:route.appOrigin}),routes,browser:false};}
+      return {media:htmlMedia(html,response.url),routes:[...configuredPlayerSources(html,response.url),...eventStreamRoutes(html,response.url,{eventUrl:route.eventUrl||url})]};
+    }
     return {media:[],routes:[]};
 }
 async function browserInspect(url,route={}) {
@@ -99,7 +115,7 @@ async function browserInspect(url,route={}) {
     };
     page.on('request',r=>add(r.url()));
     page.on('response',async r=>{try{add(r.url(),(await r.allHeaders())['content-type'],r.status());}catch{}});
-    const documentResponse=await visit(page,url,route.parentUrl);
+    const documentResponse=await visit(page,url,route.noReferer?undefined:route.parentUrl);
     if([401,403].includes(documentResponse?.status()))throw new AppError('SOURCE_ACCESS_BLOCKED',422);
     const playedFrames=new WeakSet(),deadline=Date.now()+4500;
     const hasMedia=()=>[...found.values()].some(item=>item.status<400);
@@ -121,7 +137,7 @@ async function browserInspect(url,route={}) {
       if(Date.now()<deadline)await page.waitForTimeout(250);
     }while(Date.now()<deadline);
     const routes=[];
-    for(const frame of page.frames()){try{routes.push(...eventStreamRoutes(await frame.content(),frame.url(),{eventUrl:route.eventUrl||url}));}catch{}}
+    for(const frame of page.frames()){try{const html=await frame.content();routes.push(...configuredPlayerSources(html,frame.url()),...eventStreamRoutes(html,frame.url(),{eventUrl:route.eventUrl||url}));}catch{}}
     return {media:[...found.values()].filter(x=>x.status<400).sort((a,b)=>Number(b.isHls)-Number(a.isHls)).slice(0,8),routes};
   });
 }
@@ -225,6 +241,14 @@ export async function quickValidate(item,{depth=0}={}) {
 }
 
 export function provisionalCandidate(item,sourceUrl=''){
+  if(item?.externalUrl){
+    let url;try{url=publicURL(item.externalUrl);if(excludedPlatform(url.href))return null;}catch{return null;}
+    return {...item,externalUrl:url.href,sourceUrl:sourceUrl||item.sourceUrl,id:crypto.createHash('sha256').update(url.href).digest('hex').slice(0,16),castEligible:false,provisional:true,expiresAt:Date.now()+120000};
+  }
+  if(item?.embedUrl){
+    let url;try{url=publicURL(item.embedUrl);if(excludedPlatform(url.href))return null;}catch{return null;}
+    return {...item,embedUrl:url.href,requiresProviderPlayer:true,sourceUrl:sourceUrl||item.sourceUrl,id:crypto.createHash('sha256').update(url.href).digest('hex').slice(0,16),castEligible:false,provisional:true,expiresAt:Date.now()+120000};
+  }
   const mediaUrl=item?.url||item?.mediaUrl;
   if(!mediaUrl||excludedPlatform(mediaUrl))return null;
   try{if(new URL(mediaUrl).protocol!=='https:')return null;}catch{return null;}
@@ -237,7 +261,10 @@ export function provisionalCandidate(item,sourceUrl=''){
 export function clearResolved(url,origin) {for(const key of cache.keys()) if(key.startsWith(`${origin}|${url}|`)) cache.delete(key);}
 export async function resolve(url,origin,{progress=false,scanAll=false,onCandidate=()=>{},onProgress=()=>{},playbackHistory=[],signal=currentSignal(),budgetMs=scanAll?60000:18000}={}) {
   if(excludedPlatform(url))throw new AppError('LIVE_AGGREGATORS_ONLY',422);
-  url=(await safeURL(url)).href;
+  // A supported player URL is an identifier for the public feed. We do not
+  // request that hostname until/unless it is an actual network target. Every
+  // feed/player request still passes fetchLimited/withPage's DNS checks.
+  url=(knownGscSite(url)?publicURL(url):await safeURL(url)).href;
   const key=`${origin}|${url}|${progress}`;
   const old=cache.get(key);
   if(!scanAll&&old && old.expiresAt>Date.now()){old.value.candidates.forEach(onCandidate);return old.value;}
@@ -248,14 +275,14 @@ export async function resolve(url,origin,{progress=false,scanAll=false,onCandida
     const timer=setTimeout(()=>timeout.abort(new AppError('SOURCE_TIMEOUT',504)),budgetMs);
     const candidates=new Map();let result,earlyStop=false;
     const publish=item=>{
-      const candidate=provisionalCandidate(item,url);if(!candidate||candidates.has(candidate.mediaUrl))return;
-      candidate.providerHost=hostOf(item.routeUrl||url);candidate.eventPageUrl=url;
-      candidate.displayName=candidate.providerHost.toUpperCase();candidate.mirrorLabel=item.routeLabel||'DEFAULT';
-      candidates.set(candidate.mediaUrl,candidate);onCandidate(candidate);
-      if(!scanAll){earlyStop=true;timeout.abort(new DOMException('Candidate found','AbortError'));}
+      const candidate=provisionalCandidate(item,url),identity=candidate?.mediaUrl||candidate?.embedUrl||candidate?.externalUrl;if(!candidate||candidates.has(identity))return;
+      candidate.providerHost=hostOf(item.embedUrl||item.externalUrl||item.routeUrl||url);candidate.eventPageUrl=url;
+      candidate.displayName=candidate.providerHost.toUpperCase();candidate.mirrorLabel=item.mirrorLabel||item.routeLabel||'DEFAULT';
+      candidates.set(identity,candidate);onCandidate(candidate);
+      if(!scanAll&&!candidate.externalUrl){earlyStop=true;timeout.abort(new DOMException('Candidate found','AbortError'));}
     };
     try{
-      result=await withSignal(combined,()=>walkEventStreams(url,{inspectStatic:staticInspect,inspectBrowser:browserInspect,scanAll,signal:combined,onCandidate:publish,onProgress,
+      result=await withSignal(combined,()=>walkEventStreams(url,{inspectStatic:(target,route)=>staticInspect(target,{...route,appOrigin:origin}),inspectBrowser:browserInspect,scanAll,signal:combined,onCandidate:publish,onProgress,
         priority:route=>{const records=playbackHistory.filter(value=>value.host===hostOf(route));return records.length?Math.max(...records.map(value=>historyPriority(value))):0;}}));
     }catch(cause){
       if(signal?.aborted)throw signal.reason||cause;
@@ -264,7 +291,8 @@ export async function resolve(url,origin,{progress=false,scanAll=false,onCandida
     }finally{clearTimeout(timer);}
     if(!candidates.size){
       const codes=result.failures.map(value=>value.code);
-      const error=new AppError(codes.includes('BROWSER_UNAVAILABLE')?'BROWSER_UNAVAILABLE':codes.includes('EXTRACTION_FAILED')?'EXTRACTION_FAILED':codes.includes('SOURCE_NETWORK_ERROR')?'SOURCE_NETWORK_ERROR':'NO_MEDIA',422);
+      const code=['EVENT_UNAVAILABLE','FEED_FORMAT_CHANGED','FEED_UNAVAILABLE','STREAMS_NOT_POSTED','BROWSER_UNAVAILABLE','EXTRACTION_FAILED','SOURCE_NETWORK_ERROR','SOURCE_TIMEOUT'].find(code=>codes.includes(code))||'NO_MEDIA';
+      const error=new AppError(code,code==='EVENT_UNAVAILABLE'?404:422);
       error.routeFailures=result.failures;throw error;
     }
     const value={sourceUrl:url,candidates:[...candidates.values()],checkedRoutes:result.checkedRoutes,totalRoutes:result.totalRoutes,partial:result.partial};
